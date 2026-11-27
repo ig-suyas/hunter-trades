@@ -6,21 +6,34 @@ use cs_core::Timeframe;
 /// A time frame as the platform writes it, and the candle length it maps to (if any).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TfRead {
-    /// Normalised platform label, e.g. "15", "1h", "1D".
+    /// The platform's label as written (after OCR fixes), e.g. "15", "1h", "D", "1D", "1W".
     pub raw: String,
-    /// `None` for intervals the workspace has no type for (3m, 30m, 2h, 1W, ...).
+    /// `None` for intervals the workspace has no type for (3m, 30m, 2h, 1W, 1M, 10S ...).
+    /// A daily chart ("D" or "1D") maps to `D1`, which has no live feed: it is shown as an
+    /// unsupported time frame, never treated as an intraday one.
     pub tf: Option<Timeframe>,
 }
 
 impl TfRead {
-    /// Human label: "15m", "1h", or the raw label.
+    /// Label for the panel: plain minute numbers get "m" ("15" -> "15m", "60" -> "1h"); any
+    /// other label is shown exactly as the platform writes it ("D", "1D", "1W").
     pub fn label(&self) -> String {
-        self.tf
-            .map_or_else(|| self.raw.clone(), |t| t.label().to_string())
+        if self.raw.chars().all(|c| c.is_ascii_digit()) {
+            return self
+                .tf
+                .map_or_else(|| format!("{}m", self.raw), |t| t.label().to_string());
+        }
+        self.raw.clone()
     }
 }
 
-/// `TradingView` interval codes: minutes as plain numbers, then h/D/W/M (M = month).
+/// Interval values `TradingView` writes as plain minutes.
+const MINUTE_CODES: [u32; 17] = [
+    1, 2, 3, 5, 10, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440,
+];
+
+/// `TradingView` interval codes: minutes as plain numbers ("15", "60", "240"), or a count and
+/// a unit: S seconds, m minutes, h hours, D days ("D" = "1D"), W weeks, M months.
 pub fn parse_tf(tok: &str) -> Option<TfRead> {
     let t = tok.trim().trim_matches(|c: char| !c.is_alphanumeric());
     if t.is_empty() || t.len() > 4 {
@@ -45,7 +58,9 @@ pub fn parse_tf(tok: &str) -> Option<TfRead> {
         }
     };
     if let Ok(m) = t.parse::<u32>() {
-        if m == 0 || m > 1440 {
+        // Only interval values the platform offers, so a stray number in a description
+        // ("S&P 500") is not taken for a time frame.
+        if !MINUTE_CODES.contains(&m) {
             return None;
         }
         return Some(TfRead {
@@ -54,27 +69,23 @@ pub fn parse_tf(tok: &str) -> Option<TfRead> {
         });
     }
     let (num, unit) = t.split_at(t.len() - 1);
+    // A bare unit is only written for days, weeks and months ("D", "W", "M"); a bare "S" or
+    // "m" is a letter of a word ("U.S.").
+    if num.is_empty() && !matches!(unit, "D" | "W" | "M") {
+        return None;
+    }
     let n: u32 = if num.is_empty() { 1 } else { num.parse().ok()? };
-    if n == 0 {
+    if n == 0 || n > 720 {
         return None;
     }
     let tf = match unit {
         "m" => minutes(n),
         "h" | "H" => minutes(n * 60),
         "D" | "d" => (n == 1).then_some(Timeframe::D1),
-        "W" | "w" | "M" => None,
+        "W" | "w" | "M" | "S" => None,
         _ => return None,
     };
-    let unit = match unit {
-        "H" => "h",
-        "d" => "D",
-        "w" => "W",
-        u => u,
-    };
-    Some(TfRead {
-        raw: format!("{n}{unit}"),
-        tf,
-    })
+    Some(TfRead { raw: t, tf })
 }
 
 /// Digit fixes inside a token that is mostly digits.
@@ -224,16 +235,33 @@ pub fn letters(s: &str) -> String {
 }
 
 fn exchange_like(tok: &str) -> Option<String> {
+    exchange_upper(tok).or_else(|| exchange_name(tok))
+}
+
+/// An exchange or source in capitals ("CRYPTO", "BINANCE", OCR's "CRYPT0").
+fn exchange_upper(tok: &str) -> Option<String> {
     let t = tok.trim_matches(|c: char| !c.is_alphanumeric());
     if t.len() < 3 || t.len() > 16 {
         return None;
     }
-    // "CRYPT0" -> "CRYPTO".
     let fixed: String = t.chars().map(|c| if c == '0' { 'O' } else { c }).collect();
     fixed
         .chars()
         .all(|c| c.is_ascii_uppercase())
         .then_some(fixed)
+}
+
+/// Newer legends write the exchange as a name ("Bitstamp", "Binance").
+fn exchange_name(tok: &str) -> Option<String> {
+    let t = tok.trim_matches(|c: char| !c.is_alphanumeric());
+    if t.len() > 16 {
+        return None;
+    }
+    let mut cs = t.chars();
+    let capitalised = t.len() >= 4
+        && cs.next().is_some_and(|c| c.is_ascii_uppercase())
+        && cs.all(|c| c.is_ascii_lowercase());
+    capitalised.then(|| t.to_uppercase())
 }
 
 /// Finds "<description> <sep> <interval> <sep> <EXCHANGE>" in the legend text.
@@ -272,11 +300,45 @@ pub fn parse_legend(text: &str) -> Option<Legend> {
             toks.push(cur);
         }
     }
+    // First an exchange in capitals, then a capitalised name; and the interval as read before
+    // one with OCR's digit look-alikes fixed ("IS" -> "15").
+    let passes: [(ExchangeFn, bool); 4] = [
+        (exchange_upper, false),
+        (exchange_name, false),
+        (exchange_upper, true),
+        (exchange_name, true),
+    ];
+    for (exch, fix) in passes {
+        if let Some(l) = legend_pass(&toks, exch, fix) {
+            return Some(l);
+        }
+    }
+    None
+}
+
+type ExchangeFn = fn(&str) -> Option<String>;
+
+/// The interval with OCR's digit look-alikes fixed; needs two or three characters, so a lone
+/// letter ("S" of "U.S.") never turns into a number.
+fn fixed_tf(t: &str) -> Option<TfRead> {
+    let core = t.trim_matches(|c: char| !c.is_alphanumeric());
+    (2..=3)
+        .contains(&core.chars().count())
+        .then(|| parse_tf(&fix_digits(core)))
+        .flatten()
+}
+
+fn legend_pass(toks: &[String], exch: ExchangeFn, fix: bool) -> Option<Legend> {
     for i in 1..toks.len().saturating_sub(1) {
-        let Some(tf) = parse_tf(&toks[i]) else {
+        let tf = if fix {
+            fixed_tf(&toks[i])
+        } else {
+            parse_tf(&toks[i])
+        };
+        let Some(tf) = tf else {
             continue;
         };
-        let Some(exchange) = exchange_like(&toks[i + 1]) else {
+        let Some(exchange) = exch(&toks[i + 1]) else {
             continue;
         };
         // The description: the tokens before, minus leading icon noise ("O", "0", "C)").
@@ -305,22 +367,56 @@ pub struct TitleRead {
     pub price: Option<f64>,
 }
 
-/// Parses the window title of a chart tab (browsers append " - Google Chrome" etc.).
-pub fn parse_title(title: &str) -> Option<TitleRead> {
-    let mut it = title.split_whitespace();
-    let first = it.next()?;
-    let ticker = normalise_ticker(first)?;
-    if first.chars().any(|c| c.is_ascii_lowercase()) {
-        return None;
+/// A change such as "+1.69%", "−0.12%" (minus sign), "-0,5%" or "1.7%".
+fn is_change(tok: &str) -> bool {
+    let Some(num) = tok.strip_suffix('%') else {
+        return false;
+    };
+    let num = num.trim_start_matches(['+', '-', '\u{2212}']);
+    !num.is_empty()
+        && num.chars().any(|c| c.is_ascii_digit())
+        && num
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+}
+
+/// Parses the window title of a chart tab against the config's title patterns. A pattern is a
+/// list of space-separated parts matched against the start of the title, part by part:
+/// `{ticker}` (upper-case symbol), `{price}`, `{arrow}` (▲ or ▼), `{change}` ("+1.69%"), or
+/// literal text. Browsers append " - Google Chrome", " — Mozilla Firefox" and the like after
+/// the matched part; that tail is ignored.
+pub fn parse_title(title: &str, patterns: &[String]) -> Option<TitleRead> {
+    let toks: Vec<&str> = title.split_whitespace().collect();
+    'pattern: for p in patterns {
+        let parts: Vec<&str> = p.split_whitespace().collect();
+        if parts.is_empty() || parts.len() > toks.len() {
+            continue;
+        }
+        let (mut ticker, mut price) = (None, None);
+        for (part, tok) in parts.iter().zip(&toks) {
+            let ok = match *part {
+                "{ticker}" => {
+                    ticker = normalise_ticker(tok)
+                        .filter(|_| !tok.chars().any(|c| c.is_ascii_lowercase()));
+                    ticker.is_some()
+                }
+                "{price}" => {
+                    price = parse_price(tok);
+                    price.is_some()
+                }
+                "{arrow}" => matches!(*tok, "\u{25B2}" | "\u{25BC}"),
+                "{change}" => is_change(tok),
+                lit => lit == *tok,
+            };
+            if !ok {
+                continue 'pattern;
+            }
+        }
+        if let Some(ticker) = ticker {
+            return Some(TitleRead { ticker, price });
+        }
     }
-    let price = it.next().and_then(parse_price);
-    // The chart title always has a price and a change arrow or percentage after the ticker.
-    let rest: String = title.chars().skip(first.len()).collect();
-    let shaped = rest.contains('\u{25B2}')
-        || rest.contains('\u{25BC}')
-        || rest.contains('%')
-        || rest.contains('\u{2212}');
-    (price.is_some() && shaped).then_some(TitleRead { ticker, price })
+    None
 }
 
 #[cfg(test)]
@@ -343,7 +439,7 @@ mod tests {
         let m = parse_tf("1M").unwrap();
         assert_eq!(m.tf, None, "1M is one month, not one minute");
         assert_eq!(parse_tf("3").unwrap().tf, None);
-        assert_eq!(parse_tf("3").unwrap().label(), "3");
+        assert_eq!(parse_tf("3").unwrap().label(), "3m");
         assert!(parse_tf("CRYPTO").is_none());
         assert!(parse_tf("0").is_none());
     }
@@ -411,12 +507,102 @@ mod tests {
 
     #[test]
     fn titles() {
-        let t = parse_title("BTCUSD 60,626.47 \u{25B2} +0.41% Unnamed - Google Chrome").unwrap();
-        assert_eq!(t.ticker, "BTCUSD");
-        assert!(close(t.price, 60_626.47));
-        let t = parse_title("ETHUSDT.P 1,704.15 \u{25BC} \u{2212}0.12% Unnamed").unwrap();
-        assert_eq!(t.ticker, "ETHUSDT.P");
-        assert!(parse_title("TradingView Black Friday Sale - Google Chrome").is_none());
-        assert!(parse_title("Inbox (3) - Mail").is_none());
+        let pats = crate::VisionConfig::default_config()
+            .unwrap()
+            .platforms
+            .into_iter()
+            .flat_map(|p| p.title_patterns)
+            .collect::<Vec<_>>();
+        // Real Chrome title seen on this machine (2026-11-27), then real-style Edge, Firefox
+        // and desktop-app titles: falling price, minus sign, comma decimals, layout name.
+        for (title, ticker, price) in [
+            (
+                "BTCUSD 61,515 \u{25B2} +1.69% - Google Chrome",
+                "BTCUSD",
+                Some(61_515.0),
+            ),
+            (
+                "BTCUSD 61,521 \u{25B2} +1.7% - Google Chrome",
+                "BTCUSD",
+                Some(61_521.0),
+            ),
+            (
+                "BTCUSD 60,626.47 \u{25B2} +0.41% Unnamed - Google Chrome",
+                "BTCUSD",
+                Some(60_626.47),
+            ),
+            (
+                "ETHUSDT.P 1,704.15 \u{25BC} \u{2212}0.12% Unnamed and 2 more pages - Personal - Microsoft\u{200B} Edge",
+                "ETHUSDT.P",
+                Some(1_704.15),
+            ),
+            (
+                "BTCUSDT 61,480.2 \u{25BC} -0.35% \u{2014} Mozilla Firefox",
+                "BTCUSDT",
+                Some(61_480.2),
+            ),
+            (
+                "XAUUSD 3,566.250 \u{25BC} \u{2212}0.65% My layout",
+                "XAUUSD",
+                Some(3_566.25),
+            ),
+            (
+                "BTCUSD 61,515 +1,69% - Google Chrome",
+                "BTCUSD",
+                Some(61_515.0),
+            ),
+        ] {
+            let t = parse_title(title, &pats).unwrap_or_else(|| panic!("{title}"));
+            assert_eq!(t.ticker, ticker, "{title}");
+            assert_eq!(t.price.is_some(), price.is_some(), "{title}");
+            if let Some(p) = price {
+                assert!(close(t.price, p), "{title}: {:?}", t.price);
+            }
+        }
+        for title in [
+            "TradingView \u{2014} Track All Markets - Google Chrome",
+            "Inbox (3) - Mail - Google Chrome",
+            "60,728.6 BTCUSDT +1.4% | Binance Futures - Google Chrome",
+            "NEWS 2024 - Google Chrome",
+            "BTCUSD price today - Google Chrome",
+            "btcusd 61,515 \u{25B2} +1.69% - Google Chrome",
+        ] {
+            assert!(parse_title(title, &pats).is_none(), "{title}");
+        }
+    }
+
+    #[test]
+    fn daily_and_other_labels_are_kept_as_written() {
+        for (tok, label, tf) in [
+            ("D", "D", Some(Timeframe::D1)),
+            ("1D", "1D", Some(Timeframe::D1)),
+            ("W", "W", None),
+            ("1W", "1W", None),
+            ("1M", "1M", None),
+            ("3", "3m", None),
+            ("15", "15m", Some(Timeframe::M15)),
+            ("60", "1h", Some(Timeframe::H1)),
+            ("4h", "4h", Some(Timeframe::H4)),
+            ("10S", "10S", None),
+        ] {
+            let r = parse_tf(tok).unwrap_or_else(|| panic!("{tok}"));
+            assert_eq!((r.label().as_str(), r.tf), (label, tf), "{tok}");
+        }
+        // Letters of words are not intervals; nor are numbers the platform does not offer.
+        for tok in ["S", "m", "500", "7"] {
+            assert!(parse_tf(tok).is_none(), "{tok}");
+        }
+        let l = parse_legend("Bitcoin / U.S. Dollar \u{00B7} 1D \u{00B7} Bitstamp").unwrap();
+        assert_eq!((l.tf.raw.as_str(), l.exchange.as_str()), ("1D", "BITSTAMP"));
+        let l = parse_legend("Bitcoin / U.S. Dollar \u{00B7} D \u{00B7} BITSTAMP").unwrap();
+        assert_eq!(l.tf.label(), "D");
+        assert_eq!(l.description, "bitcoinusdollar");
+        assert!(parse_legend("S&P 500 Index \u{00B7} Cboe").is_none());
+        // Seen on the window-sized trading1 frames (230 s and 10 s): "15" read as "IS", and
+        // the legend split into lines with a lone "S." before "Dollar".
+        let l = parse_legend("Bitcoin / U.S. Dollar \u{2022} IS CRYPTO").unwrap();
+        assert_eq!(l.tf.tf, Some(Timeframe::M15));
+        let l = parse_legend("Bitcoin S. Dollar \u{2022} 15 CRYPTO").unwrap();
+        assert_eq!((l.tf.raw.as_str(), l.exchange.as_str()), ("15", "CRYPTO"));
     }
 }

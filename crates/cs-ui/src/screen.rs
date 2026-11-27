@@ -41,7 +41,7 @@ pub fn decide(r: &Reading, cur_sym: &str, cur_tf: Timeframe) -> Decision {
                     None => {
                         return Decision {
                             switch: None,
-                            block: Some(copy::screen_unsupported_tf(ticker, &t.label())),
+                            block: Some(copy::screen_unsupported_tf(ticker, &t.raw)),
                         };
                     }
                 },
@@ -112,15 +112,36 @@ mod tests {
         let d = decide(&r, "BTCUSDT", Timeframe::M15);
         assert!(d.switch.is_none());
         assert!(d.block.unwrap().contains("XAUUSD"));
-        for (raw, tf) in [
-            ("4h", Some(Timeframe::H4)),
-            ("1", Some(Timeframe::M1)),
-            ("3", None),
+        for (raw, tf, words) in [
+            (
+                "D",
+                Some(Timeframe::D1),
+                "Unsupported time frame: D (one day)",
+            ),
+            (
+                "1D",
+                Some(Timeframe::D1),
+                "Unsupported time frame: 1D (one day)",
+            ),
+            (
+                "4h",
+                Some(Timeframe::H4),
+                "Unsupported time frame: 4h (4 hours)",
+            ),
+            (
+                "1",
+                Some(Timeframe::M1),
+                "Unsupported time frame: 1 (1-minute candles)",
+            ),
+            ("3", None, "Unsupported time frame: 3 (3-minute candles)"),
+            ("1W", None, "Unsupported time frame: 1W (one week)"),
         ] {
             let r = reading(sup("BTCUSD", "BTCUSDT"), Some((raw, tf)));
             let d = decide(&r, "BTCUSDT", Timeframe::M15);
             assert!(d.switch.is_none(), "{raw}");
-            assert!(d.block.unwrap().contains("time frame"), "{raw}");
+            let b = d.block.unwrap();
+            assert!(b.starts_with(words), "{raw}: {b}");
+            assert!(b.contains("5m, 15m and 1h only"), "{b}");
         }
     }
 

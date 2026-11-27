@@ -1,5 +1,10 @@
-//! Where frames come from. The real source captures **only the foreground window, and only when
-//! its title and program match a configured platform**; every other window is never captured.
+//! Where frames come from. The real source captures **only the window in front, and only when
+//! its program and title match a configured platform**; every other window is never captured.
+//!
+//! "In front" is the focused window, except when the focus is on this program's own window
+//! (the overlay takes the focus when it starts and whenever it is clicked): then it is the first
+//! normal window below the overlay in z-order, i.e. the window the user was looking at. That
+//! window too is captured only if it is a platform window.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,6 +23,8 @@ pub struct WindowInfo {
     pub app: String,
     pub w: u32,
     pub h: u32,
+    /// The window sits directly below this program's own (focused) overlay.
+    pub behind_overlay: bool,
 }
 
 pub trait FrameSource {
@@ -37,9 +44,35 @@ pub fn match_platform<'a>(cfg: &'a VisionConfig, w: &WindowInfo) -> Option<&'a P
             .title_contains
             .iter()
             .any(|t| title.contains(&t.to_lowercase()))
-            || (p.title_chart_pattern && parse::parse_title(&w.title).is_some());
+            || parse::parse_title(&w.title, &p.title_patterns).is_some();
         app_ok && title_ok
     })
+}
+
+/// What [`pick_front`] needs to know about one top-level window (z-order: first = top).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Candidate {
+    pub pid: u32,
+    pub focused: bool,
+    pub minimized: bool,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Index of the window "in front", and whether it was found below this program's own window.
+/// The focused window counts, unless it belongs to `own_pid`: then the first window below it in
+/// z-order that is not ours, not minimised and at least 300 x 200 px (so the taskbar and tool
+/// strips do not count).
+pub fn pick_front(ws: &[Candidate], own_pid: u32) -> Option<(usize, bool)> {
+    let f = ws.iter().position(|c| c.focused)?;
+    if ws[f].pid != own_pid {
+        return (!ws[f].minimized).then_some((f, false));
+    }
+    ws.iter()
+        .enumerate()
+        .skip(f + 1)
+        .find(|(_, c)| c.pid != own_pid && !c.minimized && c.w >= 300 && c.h >= 200)
+        .map(|(i, _)| (i, true))
 }
 
 /// Real windows through `xcap` (`EnumWindows` / `GetForegroundWindow` / `PrintWindow` inside the
@@ -61,11 +94,20 @@ impl FrameSource for XcapSource {
     fn foreground(&mut self) -> Option<WindowInfo> {
         self.front = None;
         let all = xcap::Window::all().ok()?;
-        let w = all.into_iter().find(|w| w.is_focused().unwrap_or(false))?;
-        if w.is_minimized().unwrap_or(true) {
-            return None;
-        }
-        let pid = w.pid().ok()?;
+        let own = std::process::id();
+        let cands: Vec<Candidate> = all
+            .iter()
+            .map(|w| Candidate {
+                pid: w.pid().unwrap_or(0),
+                focused: w.is_focused().unwrap_or(false),
+                minimized: w.is_minimized().unwrap_or(true),
+                w: w.width().unwrap_or(0),
+                h: w.height().unwrap_or(0),
+            })
+            .collect();
+        let (i, behind_overlay) = pick_front(&cands, own)?;
+        let w = all.into_iter().nth(i)?;
+        let pid = cands[i].pid;
         let app = if let Some(a) = self.apps.get(&pid) {
             a.clone()
         } else {
@@ -82,6 +124,7 @@ impl FrameSource for XcapSource {
             app,
             w: w.width().ok()?,
             h: w.height().ok()?,
+            behind_overlay,
         };
         self.front = Some(w);
         Some(info)
@@ -147,7 +190,8 @@ mod tests {
             title: title.into(),
             app: app.into(),
             w: 1920,
-            h: 1080,
+            h: 1020,
+            behind_overlay: false,
         }
     }
 
@@ -155,9 +199,27 @@ mod tests {
     fn only_platform_windows_match() {
         let c = VisionConfig::default_config().unwrap();
         let yes = [
+            // Seen on this machine: xcap's program name and the title of the Chrome chart tab
+            // (BITSTAMP:BTCUSD, daily).
+            win(
+                "BTCUSD 61,515 \u{25B2} +1.69% - Google Chrome",
+                "Google Chrome",
+            ),
+            win(
+                "BTCUSD 61,521 \u{25B2} +1.7% - Google Chrome",
+                "Google Chrome",
+            ),
             win(
                 "BTCUSD 60,626.47 \u{25B2} +0.41% Unnamed - Google Chrome",
                 "Google Chrome",
+            ),
+            win(
+                "ETHUSDT.P 1,704.15 \u{25BC} \u{2212}0.12% Unnamed and 2 more pages - Personal - Microsoft\u{200B} Edge",
+                "Microsoft Edge",
+            ),
+            win(
+                "BTCUSDT 61,480.2 \u{25BC} -0.35% \u{2014} Mozilla Firefox",
+                "Firefox",
             ),
             win("TradingView \u{2014} Track All Markets", "Microsoft Edge"),
             win(
@@ -171,12 +233,60 @@ mod tests {
         let no = [
             win("Inbox - Mail - Google Chrome", "Google Chrome"),
             win("BTCUSD 60,626.47 \u{25B2} +0.41% Unnamed", "Notepad"),
+            win("BTCUSD 61,515 \u{25B2} +1.69% - Google Chrome", "Claude"),
             win("candlescope-handoff.md - Visual Studio Code", "Code"),
             win("Candlescope context", "candlescope-overlay"),
             win("Binance Futures", "Google Chrome"),
+            win(
+                "60,728.6 BTCUSDT +1.4% | Binance Futures - Google Chrome",
+                "Google Chrome",
+            ),
+            win("NEWS 2024 - Google Chrome", "Google Chrome"),
         ];
         for w in &no {
             assert!(match_platform(&c, w).is_none(), "{w:?}");
         }
+    }
+
+    fn cand(pid: u32, focused: bool, minimized: bool, w: u32, h: u32) -> Candidate {
+        Candidate {
+            pid,
+            focused,
+            minimized,
+            w,
+            h,
+        }
+    }
+
+    /// The case seen on this machine: the overlay (pid 7) has the focus right after it starts;
+    /// the taskbar is above it, the Claude app and the Chrome chart below it.
+    #[test]
+    fn the_overlay_in_front_is_looked_through() {
+        let ws = [
+            cand(1, false, false, 1920, 60),   // taskbar (topmost)
+            cand(7, true, false, 550, 925),    // overlay, focused
+            cand(2, false, false, 1920, 1020), // window right below the overlay
+            cand(3, false, false, 1920, 1020), // Chrome further down
+        ];
+        assert_eq!(pick_front(&ws, 7), Some((2, true)));
+        // The window right below is minimised: the next one counts.
+        let ws2 = [ws[0], ws[1], cand(2, false, true, 1920, 1020), ws[3]];
+        assert_eq!(pick_front(&ws2, 7), Some((3, true)));
+        // Another program has the focus: that window, as before.
+        let ws3 = [
+            ws[0],
+            cand(7, false, false, 550, 925),
+            cand(3, true, false, 1920, 1020),
+        ];
+        assert_eq!(pick_front(&ws3, 7), Some((2, false)));
+        // Only small strips below the overlay: nothing.
+        let ws4 = [
+            cand(7, true, false, 550, 925),
+            cand(1, false, false, 1920, 60),
+        ];
+        assert_eq!(pick_front(&ws4, 7), None);
+        // A minimised focused window: nothing.
+        assert_eq!(pick_front(&[cand(3, true, true, 1920, 1020)], 7), None);
+        assert_eq!(pick_front(&[], 7), None);
     }
 }

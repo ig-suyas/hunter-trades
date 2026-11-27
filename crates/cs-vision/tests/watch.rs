@@ -25,7 +25,8 @@ fn info(title: &str) -> WindowInfo {
         title: title.into(),
         app: "Google Chrome".into(),
         w: 1920,
-        h: 1080,
+        h: 1020,
+        behind_overlay: false,
     }
 }
 

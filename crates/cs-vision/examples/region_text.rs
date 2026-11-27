@@ -14,7 +14,14 @@ fn main() -> Result<(), String> {
     }
     for (name, r) in cfg.regions.all() {
         let c = f.crop(&r);
-        let l = e.read(&c.binarize(200).upscale(k))?;
+        let l = e.read(
+            &c.binarize(if std::env::var("CS_INK").is_ok() {
+                50
+            } else {
+                200
+            })
+            .upscale(k),
+        )?;
         println!(
             "{name} ({} x {}): {:?}",
             c.w,

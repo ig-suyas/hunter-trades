@@ -292,9 +292,11 @@ impl Reader {
             .iter()
             .map(|l| parse::letters(l))
             .collect::<String>();
-        let toolbar_chart = ["indicators", "alert", "replay"]
+        let toolbar_chart = self
+            .cfg
+            .page_words
             .iter()
-            .any(|w| toolbar.contains(w));
+            .any(|w| toolbar.contains(w.as_str()));
         // OCR drops the short interval between the legend's dots now and then; on a chart page
         // the legend is retried with other preprocessing until it parses (each try is cached
         // until the legend's pixels change).
@@ -309,7 +311,7 @@ impl Reader {
             ("legend_g3", None, k + 1),
         ];
         for (i, (key, bin, scale)) in tries.into_iter().enumerate() {
-            if i > 0 && !toolbar_chart {
+            if i > 0 && !toolbar_chart && title.is_none() {
                 break;
             }
             let lines = self.try_read(key, &legend_crop, bin, scale, &mut calls);
@@ -318,7 +320,8 @@ impl Reader {
                 break;
             }
         }
-        let chart = legend.is_some() || toolbar_chart;
+        // A window title in the chart-tab shape (ticker, price, change) also says "chart".
+        let chart = legend.is_some() || toolbar_chart || title.is_some();
         if !chart {
             return Reading {
                 page: PageKind::Other,

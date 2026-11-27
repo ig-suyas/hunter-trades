@@ -46,6 +46,12 @@ pub struct WatchState {
     pub ocr_calls: u64,
     pub polls: u64,
     pub note: String,
+    /// The platform window was found below this program's own overlay (the overlay had the
+    /// focus).
+    pub behind_overlay: bool,
+    /// Program name and title of the window in front, only with the debug flag
+    /// (`CANDLESCOPE_VISION_DEBUG=1`); kept in memory for the panel, never logged.
+    pub front_debug: Option<String>,
 }
 
 impl Default for WatchState {
@@ -62,6 +68,8 @@ impl Default for WatchState {
             ocr_calls: 0,
             polls: 0,
             note: String::new(),
+            behind_overlay: false,
+            front_debug: None,
         }
     }
 }
@@ -197,16 +205,33 @@ fn run(
         }
         lock(state).polls += 1;
         let front = src.foreground();
-        let Some((info, platform)) = front
-            .as_ref()
-            .and_then(|w| match_platform(cfg, w).map(|p| (w, p.name.clone())))
-        else {
+        if privacy::debug_on() {
+            lock(state).front_debug = Some(front.as_ref().map_or_else(
+                || "no window in front".to_string(),
+                |w| {
+                    format!(
+                        "{}{} | {}",
+                        w.app,
+                        if w.behind_overlay {
+                            " (below the overlay)"
+                        } else {
+                            ""
+                        },
+                        w.title
+                    )
+                },
+            ));
+        }
+        let Some((info, platform, patterns)) = front.as_ref().and_then(|w| {
+            match_platform(cfg, w).map(|p| (w, p.name.clone(), p.title_patterns.clone()))
+        }) else {
             let mut s = lock(state);
             s.status = WatchStatus::Waiting;
             s.platform = None;
+            s.behind_overlay = false;
             continue;
         };
-        let title = parse::parse_title(&info.title);
+        let title = parse::parse_title(&info.title, &patterns);
         let ticker = title.as_ref().map(|t| t.ticker.clone());
         let key = (info.id, info.w, info.h);
         let due = last_capture.is_none_or(|t| t.elapsed() + poll / 4 >= interval)
@@ -217,6 +242,7 @@ fn run(
             s.status = WatchStatus::Reading;
             s.platform = Some(platform);
             s.title_ticker.clone_from(&ticker);
+            s.behind_overlay = info.behind_overlay;
         }
         if !due {
             continue;

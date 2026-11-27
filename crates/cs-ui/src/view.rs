@@ -40,6 +40,9 @@ pub struct View<'a> {
     pub mismatch: Option<(String, String)>,
     /// Footer text for the symbol and time frame shown.
     pub footer: String,
+    /// Program and title of the window in front: only with `CANDLESCOPE_VISION_DEBUG=1`, only
+    /// in the expanded panel, held in memory and never logged.
+    pub debug_front: Option<String>,
 }
 
 /// Inputs the user edits (kept by the app between frames).
@@ -231,6 +234,14 @@ pub fn footer(ui: &mut Ui, v: &View, out: &mut Vec<Action>) {
     wrap(ui, text(v.footer.clone()).size(pal::FONT_MIN));
     if !v.compact {
         wrap(ui, dim(copy::HELP_KEYS).size(pal::FONT_MIN));
+        if let Some(d) = &v.debug_front {
+            wrap(
+                ui,
+                RichText::new(copy::front_debug(d))
+                    .size(pal::FONT_MIN)
+                    .color(c(pal::WARN)),
+            );
+        }
     }
     let r = v.recorder;
     let line = if v.compact {

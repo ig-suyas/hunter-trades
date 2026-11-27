@@ -60,27 +60,101 @@ pub fn screen_line(state: &cs_vision::WatchState, manual: bool) -> String {
     match state.status {
         WatchStatus::Off => "Screen reading is off.".into(),
         WatchStatus::NoEngine => "Screen reading unavailable: no OCR engine.".into(),
-        WatchStatus::Waiting => "Waiting for a TradingView chart window in front.".into(),
+        WatchStatus::Waiting => "TradingView not in front.".into(),
         WatchStatus::Reading => match &state.reading {
             None => "Reading the TradingView window\u{2026}".into(),
             Some(r) if r.page != PageKind::Chart => "TradingView: no chart on this page.".into(),
             Some(r) => {
+                // The failure states first, each in its own words.
+                let mut problems: Vec<String> = Vec::new();
                 let sym = match &r.symbol {
-                    SymbolRead::Unknown => "symbol not read".to_string(),
+                    SymbolRead::Unknown => {
+                        problems.push("symbol not read".into());
+                        None
+                    }
                     SymbolRead::Supported { ticker, .. } | SymbolRead::Unsupported { ticker } => {
-                        ticker.clone()
+                        Some(ticker.clone())
                     }
                 };
-                let tf = r.tf.as_ref().map_or_else(
-                    || "time frame not read".into(),
-                    cs_vision::parse::TfRead::label,
-                );
+                match &r.tf {
+                    None => problems.push("time frame not read".into()),
+                    Some(t) if !t.tf.is_some_and(|x| cs_live::SUPPORTED_TFS.contains(&x)) => {
+                        problems.push(format!("unsupported time frame: {}", t.raw));
+                    }
+                    Some(_) => {}
+                }
+                if !problems.is_empty() {
+                    let who = sym.map_or_else(String::new, |s| format!("{s}: "));
+                    return format!("{who}{}", problems.join(" \u{00B7} "));
+                }
+                let tf =
+                    r.tf.as_ref()
+                        .map_or_else(String::new, cs_vision::parse::TfRead::label);
                 let px = r
                     .price
                     .map_or_else(|| "price not read".into(), |(p, _)| price(p));
-                format!("Screen: {sym} {tf} \u{00B7} {px}")
+                let sym = sym.unwrap_or_default();
+                let below = if state.behind_overlay {
+                    " (window below the panel)"
+                } else {
+                    ""
+                };
+                format!("Screen: {sym} {tf} \u{00B7} {px}{below}")
             }
         },
+    }
+}
+
+/// Plain words for an interval the panel has no feed for ("D" -> "one day").
+pub fn interval_words(raw: &str) -> String {
+    let (num, unit) = raw.split_at(raw.len().saturating_sub(1));
+    let n = if num.is_empty() { "1" } else { num };
+    let one = n == "1";
+    let unit = match unit {
+        "D" => {
+            if one {
+                "day"
+            } else {
+                "days"
+            }
+        }
+        "W" => {
+            if one {
+                "week"
+            } else {
+                "weeks"
+            }
+        }
+        "M" => {
+            if one {
+                "month"
+            } else {
+                "months"
+            }
+        }
+        "S" => {
+            if one {
+                "second"
+            } else {
+                "seconds"
+            }
+        }
+        "h" => {
+            if one {
+                "hour"
+            } else {
+                "hours"
+            }
+        }
+        _ if raw.chars().all(|c| c.is_ascii_digit()) => {
+            return format!("{raw}-minute candles");
+        }
+        _ => return raw.to_string(),
+    };
+    if one {
+        format!("one {unit}")
+    } else {
+        format!("{n} {unit}")
     }
 }
 
@@ -91,10 +165,17 @@ pub fn screen_unsupported(ticker: &str) -> String {
     )
 }
 
+/// `tf` is the platform's label as written ("D", "1D", "3", "4h").
 pub fn screen_unsupported_tf(ticker: &str, tf: &str) -> String {
     format!(
-        "UNSUPPORTED time frame on screen: {ticker} {tf}. Context exists for 5m, 15m and 1h only."
+        "Unsupported time frame: {tf} ({}) on {ticker}. Context exists for 5m, 15m and 1h only, so nothing is shown for this chart.",
+        interval_words(tf)
     )
+}
+
+/// Debug line (only with `CANDLESCOPE_VISION_DEBUG=1`): the window in front, as text.
+pub fn front_debug(s: &str) -> String {
+    format!("Debug \u{00B7} window in front: {s}")
 }
 
 pub fn mismatch(screen: f64, feed: f64, symbol: &str, diff_pct: f64) -> String {
@@ -751,6 +832,63 @@ mod tests {
             }
         }
         out
+    }
+
+    /// One message per failure state, in the user's words.
+    #[test]
+    fn screen_messages_per_state() {
+        use cs_vision::parse::parse_tf;
+        use cs_vision::read::{PageKind, PriceFrom, Reading, SymbolRead};
+        use cs_vision::watch::{WatchState, WatchStatus};
+        let btc = SymbolRead::Supported {
+            ticker: "BTCUSD".into(),
+            exchange: "BTCUSDT".into(),
+        };
+        let state = |sym: SymbolRead, tf: Option<&str>| WatchState {
+            status: WatchStatus::Reading,
+            reading: Some(Reading {
+                page: PageKind::Chart,
+                symbol: sym,
+                tf: tf.and_then(parse_tf),
+                price: Some((61_515.0, PriceFrom::AxisLabel)),
+                source: None,
+                symbol_from: "symbol region",
+                engine: None,
+                ocr_calls: 1,
+                read_ms: 1.0,
+            }),
+            ..WatchState::default()
+        };
+        let waiting = WatchState {
+            status: WatchStatus::Waiting,
+            ..WatchState::default()
+        };
+        assert_eq!(screen_line(&waiting, false), "TradingView not in front.");
+        assert_eq!(
+            screen_line(&state(SymbolRead::Unknown, Some("15")), false),
+            "symbol not read"
+        );
+        assert_eq!(
+            screen_line(&state(btc.clone(), None), false),
+            "BTCUSD: time frame not read"
+        );
+        assert_eq!(
+            screen_line(&state(btc.clone(), Some("D")), false),
+            "BTCUSD: unsupported time frame: D"
+        );
+        assert_eq!(
+            screen_line(&state(btc.clone(), Some("1D")), false),
+            "BTCUSD: unsupported time frame: 1D"
+        );
+        assert_eq!(
+            screen_line(&state(SymbolRead::Unknown, None), false),
+            "symbol not read \u{00B7} time frame not read"
+        );
+        assert_eq!(
+            screen_line(&state(btc, Some("15")), false),
+            "Screen: BTCUSD 15m \u{00B7} 61,515.0"
+        );
+        assert!(front_debug("Google Chrome | BTCUSD").starts_with("Debug"));
     }
 
     /// The footer quotes the random-entry loss of the symbol and time frame on screen, with

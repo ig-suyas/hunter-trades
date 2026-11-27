@@ -632,6 +632,7 @@ impl eframe::App for OverlayApp {
                 .map(|(s, f, d)| (copy::mismatch(s, f, &symbol, d), copy::mismatch_short(d))),
             // While the screen shows a symbol or time frame without a feed, the footer does not
             // quote the numbers of the feed that is still running underneath.
+            debug_front: self.screen_state.front_debug.clone(),
             footer: if self.screen_block.is_some() {
                 copy::footer("", self.ctl.tf)
             } else {

@@ -22,8 +22,9 @@ pub struct Platform {
     pub apps: Vec<String>,
     /// The window title contains one of these (case-insensitive).
     pub title_contains: Vec<String>,
-    /// Also accept `TradingView`'s chart title shape: "TICKER 60,626.47 ▲ +0.41% ...".
-    pub title_chart_pattern: bool,
+    /// Chart-tab title patterns ([`crate::parse::parse_title`]), e.g.
+    /// `"{ticker} {price} {arrow} {change}"` for "BTCUSD 61,515 ▲ +1.69% - Google Chrome".
+    pub title_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +55,8 @@ pub struct VisionConfig {
     pub platforms: Vec<Platform>,
     pub regions: Regions,
     pub exclude: Vec<(String, RectF)>,
+    /// Words of the chart toolbar (letters only, lower case) that mark a chart page.
+    pub page_words: Vec<String>,
     /// Platform ticker (upper case) -> exchange symbol.
     pub symbols: BTreeMap<String, String>,
     /// Normalised legend description (letters only, lower case) -> platform ticker.
@@ -131,10 +134,7 @@ impl VisionConfig {
                     .map(|s| s.to_lowercase())
                     .collect(),
                 title_contains: strings(p.get("title_contains")),
-                title_chart_pattern: p
-                    .get("title_chart_pattern")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                title_patterns: strings(p.get("title_patterns")),
             });
         }
         let mut exclude = Vec::new();
@@ -169,6 +169,11 @@ impl VisionConfig {
                 price_axis: reg("price_axis")?,
             },
             exclude,
+            page_words: strings(v.get("page_words"))
+                .iter()
+                .map(|w| crate::parse::letters(w))
+                .filter(|w| !w.is_empty())
+                .collect(),
             symbols: table(v.get("symbols"))
                 .into_iter()
                 .map(|(k, x)| (k.to_uppercase(), x.to_uppercase()))
@@ -222,6 +227,23 @@ impl VisionConfig {
                 }
             }
         }
+        for p in &self.platforms {
+            for t in &p.title_patterns {
+                let parts: Vec<&str> = t.split_whitespace().collect();
+                if !parts.contains(&"{ticker}") || parts.len() < 3 {
+                    return Err(format!(
+                        "config: title pattern {t:?} of {} needs {{ticker}} and at least two more parts",
+                        p.name
+                    ));
+                }
+                if let Some(bad) = parts.iter().find(|x| {
+                    x.starts_with('{')
+                        && !["{ticker}", "{price}", "{arrow}", "{change}"].contains(x)
+                }) {
+                    return Err(format!("config: unknown part {bad} in title pattern {t:?}"));
+                }
+            }
+        }
         for (en, e) in &self.exclude {
             if !e.valid() {
                 return Err(format!(
@@ -269,22 +291,37 @@ mod tests {
 
     #[test]
     fn overlap_with_excluded_area_is_refused() {
-        let s = DEFAULT_JSON.replace(
-            "\"price_axis\": { \"x\": 0.875, \"y\": 0.140, \"w\": 0.044, \"h\": 0.700 }",
-            "\"price_axis\": { \"x\": 0.875, \"y\": 0.140, \"w\": 0.044, \"h\": 0.800 }",
-        );
-        assert_ne!(s, DEFAULT_JSON);
-        let e = VisionConfig::from_json(&s).unwrap_err();
+        let mut c = VisionConfig::default_config().unwrap();
+        c.regions.price_axis.h = 0.80;
+        let e = c.validate().unwrap_err();
         assert!(e.contains("bottom trading panel"), "{e}");
     }
 
     #[test]
     fn whole_window_region_is_refused() {
-        let s = DEFAULT_JSON.replace(
-            "\"page\": { \"x\": 0.380, \"y\": 0.095, \"w\": 0.240, \"h\": 0.030 }",
-            "\"page\": { \"x\": 0.380, \"y\": 0.095, \"w\": 0.240, \"h\": 0.700 }",
+        let mut c = VisionConfig::default_config().unwrap();
+        c.regions.page.h = 0.70;
+        assert!(c.validate().unwrap_err().contains("15 %"));
+    }
+
+    #[test]
+    fn title_patterns_and_page_words_come_from_the_file() {
+        let c = VisionConfig::default_config().unwrap();
+        let tv = &c.platforms[0];
+        assert_eq!(tv.name, "TradingView");
+        assert!(
+            tv.title_patterns
+                .iter()
+                .any(|p| p == "{ticker} {price} {arrow} {change}")
         );
-        assert_ne!(s, DEFAULT_JSON);
-        assert!(VisionConfig::from_json(&s).is_err());
+        for app in ["chrome", "msedge", "firefox", "tradingview"] {
+            assert!(tv.apps.iter().any(|a| a == app), "{app}");
+        }
+        assert!(c.page_words.iter().any(|w| w == "indicators"));
+        let mut bad = c.clone();
+        bad.platforms[0].title_patterns = vec!["{price} {change} x".into()];
+        assert!(bad.validate().is_err(), "a pattern without a ticker");
+        bad.platforms[0].title_patterns = vec!["{ticker} {prize} x".into()];
+        assert!(bad.validate().is_err(), "an unknown part");
     }
 }

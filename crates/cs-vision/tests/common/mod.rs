@@ -21,19 +21,22 @@ pub fn video(name: &str) -> Option<PathBuf> {
     }
 }
 
-/// trading1.mp4 is a full-screen recording: the whole frame is the browser window.
+/// trading1.mp4 is a full-screen recording (1920 x 1080): the maximised browser window is the
+/// top 1920 x 1020 (the same size as the user's real window); the bottom 60 rows are the
+/// Windows taskbar, which a window capture never contains, so they are dropped.
 pub fn trading1(t_ms: u64) -> Option<Frame> {
     let p = video("trading1.mp4")?;
-    Some(cs_vision::video::frame_at(&p, t_ms).expect("ffmpeg frame"))
+    let f = cs_vision::video::frame_at(&p, t_ms).expect("ffmpeg frame");
+    Some(f.crop_px(0, 0, 1920, 1020))
 }
 
-/// trading.mp4 is a screen share inside a video call: the shared browser window sits at
-/// (140, 61), 1703 x 958 px (the same `TradingView` layout as trading1, scaled by 0.887). Only
-/// this rectangle is kept; the call window around it is dropped at once.
+/// trading.mp4 is a screen share inside a video call: the shared browser window (1920 x 1020
+/// on the sharer's screen, scaled by 0.887) sits at (140, 61), 1703 x 905 px. Only this
+/// rectangle is kept; the call window around it is dropped at once.
 pub fn trading_xau(t_ms: u64) -> Option<Frame> {
     let p = video("trading.mp4")?;
     let f = cs_vision::video::frame_at(&p, t_ms).expect("ffmpeg frame");
-    Some(f.crop_px(140, 61, 1703, 958))
+    Some(f.crop_px(140, 61, 1703, 905))
 }
 
 pub fn window(id: u32, title: &str, f: &Frame) -> WindowInfo {
@@ -43,6 +46,7 @@ pub fn window(id: u32, title: &str, f: &Frame) -> WindowInfo {
         app: "Google Chrome".into(),
         w: f.w,
         h: f.h,
+        behind_overlay: false,
     }
 }
 

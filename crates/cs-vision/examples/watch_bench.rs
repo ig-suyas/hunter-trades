@@ -46,7 +46,8 @@ fn main() {
             title: title.into(),
             app: "Google Chrome".into(),
             w: 1920,
-            h: 1080,
+            h: 1020,
+            behind_overlay: false,
         };
         let steps: Vec<_> = (0..secs * 2)
             .map(|k| {

@@ -163,7 +163,10 @@ fn main() -> Result<(), String> {
         .with_resizable(true)
         .with_inner_size(size)
         .with_min_inner_size([300.0, 200.0])
-        .with_mouse_passthrough(opts.click_through);
+        .with_mouse_passthrough(opts.click_through)
+        // Start without taking the focus: the chart window stays the window in front, which
+        // is what screen reading follows.
+        .with_active(false);
     let vp = match opts.pos {
         Some(p) => vp.with_position(p),
         None => vp,

@@ -1,7 +1,11 @@
 //! The only place in this crate that writes files:
-//! - the parsed-text log (one line of text per change: symbol, time frame, price; never pixels);
-//! - region crops, **only** when the debug flag `CANDLESCOPE_VISION_DEBUG=1` is set (off by
-//!   default; crops of the read regions only, never a full frame).
+//! - the parsed-text log (one line of text per change: symbol, time frame, price; never pixels,
+//!   never window titles);
+//! - region crops, **only** with `CANDLESCOPE_VISION_DEBUG=crops` (off by default; crops of the
+//!   read regions only, never a full frame).
+//!
+//! `CANDLESCOPE_VISION_DEBUG=1` only shows the window in front (program and title) in the
+//! expanded panel; it writes nothing.
 //!
 //! A test scans the crate's sources and fails if any other module writes files or opens a
 //! network connection.
@@ -13,17 +17,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::frame::Frame;
 
-/// Environment variable that turns on writing region crops for debugging.
+/// Debug flag: `1` = show the window in front in the panel; `crops` = that, plus region crops
+/// written to `data/vision-debug/`.
 pub const DEBUG_ENV: &str = "CANDLESCOPE_VISION_DEBUG";
 
 static DEBUG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static DEBUG_ON: OnceLock<bool> = OnceLock::new();
 static IMAGES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
-/// The debug folder, if the flag is set (read once per process).
+/// The debug flag is set (`1` or `crops`; read once per process).
+pub fn debug_on() -> bool {
+    *DEBUG_ON.get_or_init(|| matches!(std::env::var(DEBUG_ENV).as_deref(), Ok("1" | "crops")))
+}
+
+/// The crop folder, only with `CANDLESCOPE_VISION_DEBUG=crops` (read once per process).
 pub fn debug_dir() -> Option<&'static Path> {
     DEBUG_DIR
         .get_or_init(|| {
-            (std::env::var(DEBUG_ENV).as_deref() == Ok("1")).then(|| {
+            (std::env::var(DEBUG_ENV).as_deref() == Ok("crops")).then(|| {
                 std::env::var_os("CANDLESCOPE_VISION_DEBUG_DIR")
                     .map_or_else(|| PathBuf::from("data/vision-debug"), PathBuf::from)
             })
@@ -106,6 +117,27 @@ mod tests {
                 assert!(!code.contains(b), "{name} contains {b:?}");
             }
         }
+    }
+
+    /// The log gets the parsed reading only: never the window title or the debug line.
+    #[test]
+    fn log_holds_parsed_text_only() {
+        let src = include_str!("watch.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let calls: Vec<&str> = code
+            .match_indices("log_text(")
+            .map(|(i, _)| &code[i..])
+            .collect();
+        assert_eq!(calls.len(), 1, "one log call in the watcher");
+        let call = &calls[0][..calls[0].find(");").unwrap_or(calls[0].len())];
+        assert!(call.contains("reading.summary()"), "{call}");
+        for bad in ["title", "front", "app"] {
+            assert!(!call.contains(bad), "log call mentions {bad}: {call}");
+        }
+        // The debug line is filled only with the debug flag.
+        let i = code.find("front_debug = Some(").expect("debug line");
+        let before = &code[..i];
+        assert!(before.rfind("debug_on()").is_some_and(|j| i - j < 200));
     }
 
     #[test]
