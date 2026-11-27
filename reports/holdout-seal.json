@@ -1,0 +1,59 @@
+{
+  "boundary_ms": 1779840000000,
+  "boundary_utc": "2026-05-27 00:00",
+  "created_utc": "2026-11-27 05:05:47",
+  "data_end_utc": "2026-11-26 00:00",
+  "discovery_utc": [
+    "2024-11-01 00:00",
+    "2025-11-01 00:00"
+  ],
+  "holdout_data_sha256": {
+    "BTCUSDT": {
+      "15m": {
+        "candles": 17568,
+        "sha256": "e3380dbbe0b414aa3e0ea2a67be9f7b9f4f88255e1e6687a214226c59e9deaf9"
+      },
+      "1h": {
+        "candles": 4392,
+        "sha256": "81f5bcaada35a73c9d3697937180b09a6d5322e5879b4c555d26b35a1763fa05"
+      },
+      "1m": {
+        "candles": 263520,
+        "sha256": "d9a7862aa0a0933ae76c2939ddc8af6ed006228c959b13acfeeb7c692de97d81"
+      },
+      "5m": {
+        "candles": 52704,
+        "sha256": "865b7e2ff0fb6b374a3538d4f71efacf8cf538e10857e7cf3410ef8b85c20a03"
+      }
+    },
+    "ETHUSDT": {
+      "15m": {
+        "candles": 17568,
+        "sha256": "579f0046fe208a87ee45d3f27186a10631982d979995ec825a3958f037592f4d"
+      },
+      "1h": {
+        "candles": 4392,
+        "sha256": "11af88181152497f7a6bcacb21ddd1dc06bd4ffb495223b121818d223159ed29"
+      },
+      "1m": {
+        "candles": 263520,
+        "sha256": "dfd7cac3d503ec9caf4179848f57058d500e6f26b009cb061a974bbe4961a652"
+      },
+      "5m": {
+        "candles": 52704,
+        "sha256": "a964a411283930edec58df41703c6250d993df3de0a39c9f101153648a80b23c"
+      }
+    }
+  },
+  "holdout_utc": [
+    "2026-05-27 00:00",
+    "2026-11-26 00:00"
+  ],
+  "protocol_sha256": "f85c4752f7034da03cb4c4927ef07eb755b50fab10217e45ba43e80a41d5c1e7",
+  "rule": "Only `candlescope research --final` may load data from the boundary on. It creates reports/holdout.lock first and refuses to run while that file exists; only the user deletes it.",
+  "search_space_sha256": "fe77fcff1f1b743d4e1a0af267a3be163a0430743d983f52e856a8f1172da5a6",
+  "validation_utc": [
+    "2025-11-01 00:00",
+    "2026-05-27 00:00"
+  ]
+}

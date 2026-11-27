@@ -1,10 +1,13 @@
 //! cs-stats: statistics used by the backtester and the research phase.
 //!
-//! Phase 3 adds the block bootstrap ([`bootstrap`]); walk-forward, multiple-testing control and
-//! the probability model follow in Phase 4/5. Advisory only: nothing in this workspace places
+//! Phase 3 adds the block bootstrap ([`bootstrap`]); Phase 4 adds the HAC t-test and
+//! Benjamini-Hochberg FDR control ([`hyp`]) and rolling walk-forward windows ([`walkforward`]);
+//! the probability model follows in Phase 5. Advisory only: nothing in this workspace places
 //! orders.
 
 pub mod bootstrap;
+pub mod hyp;
+pub mod walkforward;
 
 /// `SplitMix64`: small deterministic RNG (same algorithm as `cs_patterns::util::Rng`, kept here
 /// so this crate has no dependencies).

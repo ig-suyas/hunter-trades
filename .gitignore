@@ -19,6 +19,8 @@
 
 # Large generated report artefacts (Markdown reports and the SVG/HTML detector gallery stay tracked)
 /reports/**/*.csv
+# ...except the Phase 4 trial ledger (the audit record of every trial, ~6 MB)
+!/reports/trial-ledger.csv
 /reports/**/*.parquet
 /reports/**/*.png
 /reports/**/*.zip

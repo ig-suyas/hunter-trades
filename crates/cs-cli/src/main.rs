@@ -5,6 +5,7 @@
 
 mod backtest;
 mod detect;
+mod research;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -46,6 +47,16 @@ Commands:
                  --out-dir data/backtest  --report <file.md>
                  --bench (time a full run: all history, all detectors x rule templates x cost
                  levels; prints timings and a hash only, no outcome numbers)
+  research       Phase 4 protocol (reports/protocol.md), stages in this order:
+                 --seal             write reports/holdout-seal.json (never overwritten)
+                 --stage discovery  all pre-registered trials on BTC months 1-12, FDR, plateau,
+                                    finalists frozen in reports/research/finalists.json
+                 --stage validate   frozen finalists on months 13-18, ETH, walk-forward, baselines
+                 --stage winrates   descriptive: target-hit / gross / net win rates of the
+                                    fixed-target discovery trials (no selection, not in the ledger)
+                 --final            open the sealed holdout ONCE (creates reports/holdout.lock,
+                                    refuses while it exists) for finalists that passed validation
+                 --reports-dir reports  --threads 6
   record-status  print the recorder's status file
   record-stop    ask a running recorder to stop (creates data/live/STOP)
 
@@ -346,7 +357,49 @@ fn cmd_backtest(a: &Args) -> Result<(), String> {
         out_dir: PathBuf::from(a.get("--out-dir").unwrap_or("data/backtest")),
         report: a.get("--report").map(PathBuf::from),
     };
+    // While the Phase 4 seal exists, only `research --final` may read the holdout.
+    let reports = PathBuf::from(a.get("--reports-dir").unwrap_or("reports"));
+    let mut o = o;
+    if let Some(b) = research::seal_boundary(&reports)? {
+        if o.open_holdout {
+            return Err(
+                "--open-holdout is refused: the holdout is sealed (reports/holdout-seal.json); only `candlescope research --final` may open it"
+                    .into(),
+            );
+        }
+        match o.holdout_from {
+            Some(h) if h > b => {
+                return Err(format!(
+                    "--holdout-from after the sealed boundary {} is refused",
+                    cs_core::time::fmt_minute(b)
+                ));
+            }
+            None => o.holdout_from = Some(b),
+            Some(_) => {}
+        }
+    }
     backtest::run(&a.data_dir(), &o, &|s| out(s))
+}
+
+fn cmd_research(a: &Args) -> Result<(), String> {
+    let o = research::Opts {
+        data: a.data_dir(),
+        reports: PathBuf::from(a.get("--reports-dir").unwrap_or("reports")),
+        threads: a.num("--threads", 6)?,
+    };
+    let p = |s: &str| out(s);
+    if a.has("--seal") {
+        research::seal(&o, &p)
+    } else if a.has("--final") {
+        research::holdout::run(&o, &p)
+    } else {
+        match a.get("--stage") {
+            Some("discovery") => research::discovery::run(&o, &p),
+            Some("validate") => research::validate::run(&o, &p),
+            Some("winrates") => research::discovery::winrates(&o, &p),
+            _ => Err("research: give --seal, --stage discovery|validate or --final".into()),
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -363,6 +416,7 @@ fn main() -> ExitCode {
         "record" => cmd_record(&a),
         "detect" => cmd_detect(&a),
         "backtest" => cmd_backtest(&a),
+        "research" => cmd_research(&a),
         "record-status" => record::status_text(&a.data_dir().live())
             .map(|s| out(&s))
             .map_err(|e| e.to_string()),

@@ -1,0 +1,77 @@
+{
+  "discovery_ledger_sha256": "ee00c1d0858d51a7984587affec4b36eb753e240887fb8c8412927ae878792f7",
+  "exploratory": [
+    {
+      "label": "fib_touch native 1h b025-trail F09",
+      "trial_id": 28172
+    },
+    {
+      "label": "fib_leg native 1h b025-trail F09",
+      "trial_id": 28490
+    },
+    {
+      "label": "ema_cross native 15m b100-t3 F07",
+      "trial_id": 15499
+    },
+    {
+      "label": "pullback reversed 1h b100-t1 F08",
+      "trial_id": 28743
+    },
+    {
+      "label": "cdl_three_outside_up native 1h b025-trail F00",
+      "trial_id": 31648
+    },
+    {
+      "label": "tl_formed reversed 1h b100-trail F07",
+      "trial_id": 28127
+    },
+    {
+      "label": "fib_ext native 15m b100-trail F07",
+      "trial_id": 16605
+    },
+    {
+      "label": "swing native 1h b100-lvl F07",
+      "trial_id": 25684
+    },
+    {
+      "label": "cdl_tweezer_top reversed 1h b025-trail F00",
+      "trial_id": 33442
+    },
+    {
+      "label": "choch reversed 1h b100-trail F09",
+      "trial_id": 26398
+    }
+  ],
+  "finalists": [],
+  "frozen_utc": "2026-11-27 05:08:14",
+  "wr80": [
+    {
+      "label": "sd_formed native 1h b025-t0.25 F00",
+      "trial_id": 27116
+    },
+    {
+      "label": "ema_stack native 1h b100-t0.25 F00",
+      "trial_id": 27432
+    },
+    {
+      "label": "fib_ext native 15m b100-t0.25 F00",
+      "trial_id": 16612
+    },
+    {
+      "label": "fib_ext native 1h b025-t0.25 F00",
+      "trial_id": 28370
+    },
+    {
+      "label": "cdl_three_outside_up native 1h b100-t0.25 F00",
+      "trial_id": 31694
+    },
+    {
+      "label": "cdl_three_outside_down native 1h b100-t0.25 F00",
+      "trial_id": 34034
+    },
+    {
+      "label": "sr_break native 1h b100-t0.25 F00",
+      "trial_id": 26484
+    }
+  ]
+}
