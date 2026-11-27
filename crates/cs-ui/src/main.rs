@@ -6,7 +6,13 @@
 //!                     [--demo live|stale|disconnected|nodata|unsupported|muted|replay]
 //!                     [--entry <price> --stop <price>] [--screenshot <png>] [--layout-check]
 //!                     [--exit-after <seconds>] [--size <W>x<H>]
+//!                     [--screen on|off] [--no-settings]
 //! ```
+//!
+//! Settings (position, size, opacity, mode, account size, risk %, last symbol and time frame,
+//! screen reading on/off) are restored from `data/overlay-settings.json`; arguments win over
+//! the file. Demo, screenshot and layout-check runs neither read nor write the file and never
+//! capture the screen.
 //!
 //! Context only: the GATE found no setup that survives costs (0 of 59). It displays; it never
 //! places orders and holds no keys. Network use: Binance public market data only.
@@ -23,6 +29,8 @@ mod palette;
 mod png;
 mod recorder;
 mod risk;
+mod screen;
+mod settings;
 mod view;
 
 use std::path::PathBuf;
@@ -32,12 +40,30 @@ use cs_core::Timeframe;
 use eframe::egui;
 
 fn parse() -> Result<app::Opts, String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut root = std::env::current_dir().map_err(|e| e.to_string())?;
+    if let Some(i) = args.iter().position(|a| a == "--root")
+        && let Some(r) = args.get(i + 1)
+    {
+        root = PathBuf::from(r);
+    }
+    let check_run = args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "--demo" | "--screenshot" | "--layout-check" | "--no-settings"
+        )
+    });
+    let st = if check_run {
+        settings::Settings::default()
+    } else {
+        settings::Settings::load(&root)
+    };
     let mut o = app::Opts {
-        symbol: "BTCUSDT".into(),
-        tf: Timeframe::M15,
-        root: std::env::current_dir().map_err(|e| e.to_string())?,
+        symbol: st.symbol.clone(),
+        tf: st.tf,
+        root,
         demo: None,
-        expanded: false,
+        expanded: !st.compact,
         muted: false,
         click_through: false,
         screenshot: None,
@@ -45,9 +71,16 @@ fn parse() -> Result<app::Opts, String> {
         stop: String::new(),
         layout_check: false,
         exit_after: None,
-        size: None,
+        size: st.size.map(|[w, h]| egui::vec2(w, h)),
+        pos: st.pos,
+        opacity: st.opacity,
+        account: st.account.clone(),
+        risk_pct: st.risk_pct.clone(),
+        screen: st.screen_reading,
+        use_settings: !check_run,
+        demo_mismatch: false,
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
@@ -64,12 +97,26 @@ fn parse() -> Result<app::Opts, String> {
                 if v == "muted" {
                     o.muted = true;
                 }
+                if v == "mismatch" {
+                    o.demo_mismatch = true;
+                }
                 if v == "unsupported" && cs_live::is_supported(&o.symbol) {
                     o.symbol = "NVDAUSDT".into();
                 }
                 o.demo = Some((st, v));
             }
-            "--expanded" => o.expanded = true,
+            "--expanded" => {
+                o.expanded = true;
+                o.size = None;
+            }
+            "--screen" => {
+                o.screen = match val()?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    v => return Err(format!("--screen takes on or off, not {v}")),
+                };
+            }
+            "--no-settings" => o.use_settings = false,
             "--muted" => o.muted = true,
             "--click-through" => o.click_through = true,
             "--screenshot" => o.screenshot = Some(PathBuf::from(val()?)),
@@ -117,6 +164,10 @@ fn main() -> Result<(), String> {
         .with_inner_size(size)
         .with_min_inner_size([300.0, 200.0])
         .with_mouse_passthrough(opts.click_through);
+    let vp = match opts.pos {
+        Some(p) => vp.with_position(p),
+        None => vp,
+    };
     let native = eframe::NativeOptions {
         viewport: vp,
         renderer: eframe::Renderer::Glow,

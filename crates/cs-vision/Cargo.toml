@@ -1,6 +1,6 @@
 [package]
 name = "cs-vision"
-description = "Screen read of symbol and time frame (local only)"
+description = "Screen read of symbol, time frame and last price (local only, never candles)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,3 +11,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+cs-core.workspace = true
+serde_json.workspace = true
+# Window list, foreground check and capture of one window (GDI PrintWindow), safe API; the
+# workspace forbids `unsafe`, so the raw Win32 / Windows Graphics Capture calls are not an option.
+# xcap 0.9 uses windows 0.62 and image 0.25, both already in the overlay's tree.
+xcap.workspace = true
+# Offline Windows OCR engine (Windows.Media.Ocr) through the WinRT bindings already in the tree.
+windows.workspace = true

@@ -17,13 +17,21 @@ use eframe::egui::{
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
+use cs_vision::handshake::{Handshake, MismatchGate, check_price};
+use cs_vision::read::PageKind;
+use cs_vision::source::{FrameSource, XcapSource};
+use cs_vision::{VisionConfig, WatchState, Watcher};
+
+use crate::copy;
 use crate::demo::{self, DemoState};
 use crate::palette as pal;
 use crate::recorder::{self, RecorderInfo};
+use crate::screen;
+use crate::settings::Settings;
 use crate::view::{self, Action, Controls, View};
 
-pub const COMPACT: Vec2 = Vec2::new(330.0, 260.0);
-pub const EXPANDED: Vec2 = Vec2::new(440.0, 720.0);
+pub const COMPACT: Vec2 = Vec2::new(330.0, 290.0);
+pub const EXPANDED: Vec2 = Vec2::new(440.0, 740.0);
 
 /// Command line options.
 #[derive(Debug, Clone)]
@@ -43,6 +51,17 @@ pub struct Opts {
     pub exit_after: Option<Duration>,
     /// Window size override (screenshots).
     pub size: Option<Vec2>,
+    /// Window position restored from the settings file.
+    pub pos: Option<[f32; 2]>,
+    pub opacity: f32,
+    pub account: String,
+    pub risk_pct: String,
+    /// Screen reading on at start.
+    pub screen: bool,
+    /// Read and write `data/overlay-settings.json` (off for demos, screenshots, checks).
+    pub use_settings: bool,
+    /// Demo of the SOURCE MISMATCH state.
+    pub demo_mismatch: bool,
 }
 
 enum Source {
@@ -61,6 +80,9 @@ struct Keys {
     hide: u32,
     mute: u32,
     click: u32,
+    screen: u32,
+    /// Every hotkey registered (false: another program owns at least one).
+    all_ok: bool,
 }
 
 pub struct OverlayApp {
@@ -82,6 +104,20 @@ pub struct OverlayApp {
     layout: view::Layout_,
     layout_printed: bool,
     exit_logged: bool,
+    /// Screen reading (Phase 7): the watcher thread, or why there is none.
+    vision: Option<Watcher>,
+    vision_note: Option<String>,
+    screen_on: bool,
+    /// The user picked a symbol by hand: the screen is ignored until "Follow screen".
+    manual: bool,
+    screen_seq: u64,
+    screen_state: WatchState,
+    screen_block: Option<String>,
+    gate: MismatchGate,
+    mismatch: Option<(f64, f64, f64)>,
+    tolerance_pct: f64,
+    saved: Settings,
+    saved_at: Instant,
 }
 
 fn load_fonts(ctx: &egui::Context) -> bool {
@@ -153,12 +189,20 @@ fn local_offset() -> i64 {
 fn register_keys(ctx: &egui::Context) -> Option<Keys> {
     let mgr = GlobalHotKeyManager::new().ok()?;
     let m = Some(Modifiers::CONTROL | Modifiers::ALT);
-    let (h, mu, t) = (
+    let (h, mu, t, sc) = (
         HotKey::new(m, Code::KeyH),
         HotKey::new(m, Code::KeyM),
         HotKey::new(m, Code::KeyT),
+        HotKey::new(m, Code::KeyS),
     );
-    mgr.register_all(&[h, mu, t]).ok()?;
+    // One at a time: a key another program owns must not cost the others.
+    let ok: Vec<bool> = [h, mu, t, sc]
+        .iter()
+        .map(|k| mgr.register(*k).is_ok())
+        .collect();
+    if !ok.iter().any(|x| *x) {
+        return None;
+    }
     let (tx, rx) = channel();
     let c2 = ctx.clone();
     // The handler runs on the window thread's message loop, also while the window is hidden;
@@ -173,7 +217,32 @@ fn register_keys(ctx: &egui::Context) -> Option<Keys> {
         hide: h.id(),
         mute: mu.id(),
         click: t.id(),
+        screen: sc.id(),
+        all_ok: ok.iter().all(|x| *x),
     })
+}
+
+/// Starts the screen watcher (never in demo, screenshot or layout-check runs: those must not
+/// capture anything).
+fn start_vision(opts: &Opts) -> (Option<Watcher>, Option<String>, f64) {
+    let tol = 0.3;
+    if opts.demo.is_some() || opts.screenshot.is_some() || opts.layout_check {
+        return (None, Some("not used in demo runs".into()), tol);
+    }
+    match VisionConfig::load(&opts.root) {
+        Ok(cfg) => {
+            let tol = cfg.price_tolerance_pct;
+            let log = opts.root.join("data").join("logs").join("vision.log");
+            let w = Watcher::spawn(
+                cfg,
+                || Box::new(XcapSource::new()) as Box<dyn FrameSource>,
+                Some(log),
+                opts.screen,
+            );
+            (Some(w), None, tol)
+        }
+        Err(e) => (None, Some(e), tol),
+    }
 }
 
 fn make_source(opts: &Opts, symbol: &str, tf: Timeframe) -> Source {
@@ -201,6 +270,13 @@ impl OverlayApp {
         style(&cc.egui_ctx, compact);
         let keys = register_keys(&cc.egui_ctx);
         let source = make_source(&opts, &opts.symbol, opts.tf);
+        let (vision, vision_note, tolerance_pct) = start_vision(&opts);
+        let screen_on = vision.is_some() && opts.screen;
+        let mismatch = opts.demo_mismatch.then_some((
+            1_704.15,
+            91_000.0,
+            (1_704.15 - 91_000.0) / 91_000.0 * 100.0,
+        ));
         if opts.click_through {
             cc.egui_ctx
                 .send_viewport_cmd(ViewportCommand::MousePassthrough(true));
@@ -209,9 +285,9 @@ impl OverlayApp {
             ctl: Controls {
                 symbol: opts.symbol.clone(),
                 tf: opts.tf,
-                opacity: pal::DEFAULT_OPACITY,
-                account: "10,000".into(),
-                risk_pct: "1".into(),
+                opacity: opts.opacity.clamp(pal::MIN_OPACITY, 1.0),
+                account: opts.account.clone(),
+                risk_pct: opts.risk_pct.clone(),
                 entry: opts.entry.clone(),
                 stop: opts.stop.clone(),
                 funding_n: "1".into(),
@@ -232,8 +308,130 @@ impl OverlayApp {
             layout: view::Layout_::default(),
             layout_printed: false,
             exit_logged: false,
+            vision,
+            vision_note,
+            screen_on,
+            manual: false,
+            screen_seq: u64::MAX,
+            screen_state: WatchState::default(),
+            screen_block: None,
+            gate: MismatchGate::new(2),
+            mismatch,
+            tolerance_pct,
+            saved: Settings::default(),
+            saved_at: Instant::now(),
             source,
             opts,
+        }
+    }
+
+    /// Switches the feed (dropping the old handle stops its thread).
+    fn switch_feed(&mut self, sym: &str, tf: Timeframe) {
+        self.ctl.symbol = sym.to_string();
+        self.ctl.tf = tf;
+        self.source = make_source(&self.opts, sym, tf);
+        self.gate.reset();
+        if !self.opts.demo_mismatch {
+            self.mismatch = None;
+        }
+    }
+
+    /// Follows the screen: a new reading switches the feed, blocks an unsupported symbol or
+    /// time frame, or runs the price handshake.
+    fn process_screen(&mut self) {
+        let Some(w) = &self.vision else {
+            return;
+        };
+        self.screen_state = w.state();
+        if !self.screen_on || self.manual {
+            self.screen_block = None;
+            self.mismatch = None;
+            self.gate.reset();
+            return;
+        }
+        if self.screen_state.seq == self.screen_seq {
+            return;
+        }
+        self.screen_seq = self.screen_state.seq;
+        let Some(r) = self.screen_state.reading.clone() else {
+            self.screen_block = None;
+            return;
+        };
+        let d = screen::decide(&r, &self.ctl.symbol, self.ctl.tf);
+        self.screen_block = d.block;
+        if let Some((sym, tf)) = d.switch {
+            self.switch_feed(&sym, tf);
+            return;
+        }
+        if r.page == PageKind::Chart && r.symbol.exchange() == Some(self.ctl.symbol.as_str()) {
+            let feed = self.read().0.last_price;
+            let h = check_price(r.price.map(|p| p.0), feed, self.tolerance_pct);
+            let on = self.gate.update(h);
+            if let Handshake::Mismatch {
+                screen,
+                feed,
+                diff_pct,
+            } = h
+            {
+                if on {
+                    self.mismatch = Some((screen, feed, diff_pct));
+                }
+            } else if !on {
+                self.mismatch = None;
+            }
+        }
+    }
+
+    fn set_screen(&mut self, on: bool) {
+        if let Some(w) = &self.vision {
+            self.screen_on = on;
+            self.manual = false;
+            self.screen_seq = u64::MAX;
+            w.set_enabled(on);
+        }
+    }
+
+    /// Current settings (window geometry from the viewport).
+    fn current_settings(&self, ctx: &egui::Context) -> Settings {
+        let (pos, size) = ctx.input(|i| {
+            let vp = i.viewport();
+            (
+                vp.outer_rect.map(|r| [r.min.x, r.min.y]),
+                vp.inner_rect.map(|r| [r.width(), r.height()]),
+            )
+        });
+        Settings {
+            pos: pos.or(self.saved.pos),
+            size: size.or(self.saved.size),
+            opacity: self.ctl.opacity,
+            compact: self.compact,
+            account: self.ctl.account.clone(),
+            risk_pct: self.ctl.risk_pct.clone(),
+            symbol: if cs_live::is_supported(&self.ctl.symbol) {
+                self.ctl.symbol.clone()
+            } else {
+                self.saved.symbol.clone()
+            },
+            tf: self.ctl.tf,
+            screen_reading: if self.vision.is_some() {
+                self.screen_on
+            } else {
+                self.opts.screen
+            },
+        }
+    }
+
+    fn save_settings(&mut self, ctx: &egui::Context) {
+        if !self.opts.use_settings || self.saved_at.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.saved_at = Instant::now();
+        let cur = self.current_settings(ctx);
+        if !cur.same(&self.saved) {
+            if let Err(e) = cur.save(&self.opts.root) {
+                eprintln!("settings not saved: {e}");
+            }
+            self.saved = cur;
         }
     }
 
@@ -268,8 +466,17 @@ impl OverlayApp {
                 }));
             }
             Action::SetFeed(sym, tf) => {
-                // Dropping the old handle stops its thread.
-                self.source = make_source(&self.opts, &sym, tf);
+                // A pick by hand overrides the screen until "Follow screen".
+                if self.screen_on {
+                    self.manual = true;
+                    self.screen_block = None;
+                }
+                self.switch_feed(&sym, tf);
+            }
+            Action::ToggleScreen => self.set_screen(!self.screen_on),
+            Action::FollowScreen => {
+                self.manual = false;
+                self.screen_seq = u64::MAX;
             }
             Action::SetClickThrough(on) => {
                 self.click_through = on;
@@ -342,6 +549,8 @@ impl eframe::App for OverlayApp {
                     acts.push(Action::ToggleMute);
                 } else if e.id == k.click {
                     acts.push(Action::SetClickThrough(!self.click_through));
+                } else if e.id == k.screen {
+                    acts.push(Action::ToggleScreen);
                 }
             }
         }
@@ -385,8 +594,12 @@ impl eframe::App for OverlayApp {
             }
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
+        self.process_screen();
+        self.save_settings(ctx);
         self.screenshot(ctx);
-        ctx.request_repaint_after(Duration::from_millis(1000));
+        // Faster repaints while screen reading is on, so a switch shows within ~0.25 s.
+        let every = if self.screen_on { 250 } else { 1000 };
+        ctx.request_repaint_after(Duration::from_millis(every));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -404,7 +617,26 @@ impl eframe::App for OverlayApp {
             compact: self.compact,
             muted: self.muted,
             click_through: self.click_through,
-            hotkeys_ok: self.keys.is_some(),
+            hotkeys_ok: self.keys.as_ref().is_some_and(|k| k.all_ok),
+            screen_avail: self.vision.is_some(),
+            screen_on: self.screen_on,
+            manual: self.manual,
+            screen_line: match (&self.vision, &self.vision_note) {
+                (Some(_), _) => copy::screen_line(&self.screen_state, self.manual),
+                (None, Some(n)) => format!("Screen reading unavailable: {n}."),
+                (None, None) => "Screen reading unavailable.".into(),
+            },
+            screen_block: self.screen_block.clone(),
+            mismatch: self
+                .mismatch
+                .map(|(s, f, d)| (copy::mismatch(s, f, &symbol, d), copy::mismatch_short(d))),
+            // While the screen shows a symbol or time frame without a feed, the footer does not
+            // quote the numbers of the feed that is still running underneath.
+            footer: if self.screen_block.is_some() {
+                copy::footer("", self.ctl.tf)
+            } else {
+                copy::footer(&symbol, self.ctl.tf)
+            },
         };
         let fill = pal::bg(self.ctl.opacity);
         let frame = |top: bool| {
@@ -434,7 +666,7 @@ impl eframe::App for OverlayApp {
         if self.opts.layout_check && !self.layout_printed && self.frames >= 4 {
             self.layout_printed = true;
             let l = self.layout;
-            let glyphs = "\u{2261}\u{25CF}\u{25B2}\u{2715}\u{25CB}\u{2191}\u{2193}\u{2194}\u{25BE}\u{25B4}\u{25E2}\u{26A0}\u{00B7}\u{2013}";
+            let glyphs = "\u{25C9}\u{2026}\u{2261}\u{25CF}\u{25B2}\u{2715}\u{25CB}\u{2191}\u{2193}\u{2194}\u{25BE}\u{25B4}\u{25E2}\u{26A0}\u{00B7}\u{2013}";
             let has = ui
                 .ctx()
                 .fonts_mut(|f| f.has_glyphs(&FontId::proportional(pal::FONT_MIN), glyphs));

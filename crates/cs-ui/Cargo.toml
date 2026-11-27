@@ -17,6 +17,8 @@ cs-live.workspace = true
 cs-backtest.workspace = true
 cs-data.workspace = true
 cs-patterns.workspace = true
+# Phase 7: screen awareness (symbol, time frame and price check from the platform window).
+cs-vision.workspace = true
 eframe.workspace = true
 global-hotkey.workspace = true
 time.workspace = true

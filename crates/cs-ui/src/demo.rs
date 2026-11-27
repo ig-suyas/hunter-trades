@@ -30,7 +30,7 @@ pub enum DemoState {
 impl DemoState {
     pub fn parse(s: &str) -> Option<DemoState> {
         Some(match s {
-            "live" | "muted" | "unsupported" => DemoState::Live,
+            "live" | "muted" | "unsupported" | "mismatch" => DemoState::Live,
             "stale" => DemoState::Stale,
             "disconnected" => DemoState::Disconnected,
             "nodata" => DemoState::NoData,

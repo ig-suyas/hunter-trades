@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "about": "Phase 7 screen awareness. Regions are fractions (0..1) of the captured window. Only the four regions below are ever read; the exclude list must never overlap them (checked at load). Reference layout: TradingView in a maximised browser, 1920 x 1080, light or dark theme.",
+  "capture": {
+    "fps": 2.0,
+    "title_poll_ms": 150,
+    "ocr_scale": 2
+  },
+  "price_tolerance_pct": 0.3,
+  "platforms": [
+    {
+      "name": "TradingView",
+      "apps": ["chrome", "msedge", "edge", "firefox", "brave", "opera", "vivaldi", "tradingview"],
+      "title_contains": ["TradingView"],
+      "title_chart_pattern": true
+    }
+  ],
+  "regions": {
+    "symbol": { "x": 0.070, "y": 0.095, "w": 0.070, "h": 0.030 },
+    "legend": { "x": 0.075, "y": 0.137, "w": 0.285, "h": 0.031 },
+    "page": { "x": 0.380, "y": 0.095, "w": 0.240, "h": 0.030 },
+    "price_axis": { "x": 0.875, "y": 0.140, "w": 0.044, "h": 0.700 }
+  },
+  "exclude": [
+    { "name": "browser tabs and address bar (other sites)", "x": 0.0, "y": 0.0, "w": 1.0, "h": 0.090 },
+    { "name": "account menu and trade button (top right)", "x": 0.800, "y": 0.090, "w": 0.200, "h": 0.045 },
+    { "name": "order buttons with prices", "x": 0.075, "y": 0.170, "w": 0.130, "h": 0.035 },
+    { "name": "right side panel (watchlist, account details)", "x": 0.930, "y": 0.135, "w": 0.070, "h": 0.725 },
+    { "name": "bottom trading panel (balance, positions, orders)", "x": 0.0, "y": 0.860, "w": 1.0, "h": 0.140 }
+  ],
+  "symbols": {
+    "BTCUSD": "BTCUSDT",
+    "BTCUSDT": "BTCUSDT",
+    "BTCUSDT.P": "BTCUSDT",
+    "BTCUSDTPERP": "BTCUSDT",
+    "BTCPERP": "BTCUSDT",
+    "XBTUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT",
+    "ETHUSDT": "ETHUSDT",
+    "ETHUSDT.P": "ETHUSDT",
+    "ETHUSDTPERP": "ETHUSDT",
+    "ETHPERP": "ETHUSDT"
+  },
+  "descriptions": {
+    "bitcoinusdollar": "BTCUSD",
+    "bitcointetherus": "BTCUSDT",
+    "bitcointetherusperpetualcontract": "BTCUSDT.P",
+    "bitcoinusdtperpetual": "BTCUSDT.P",
+    "ethereumusdollar": "ETHUSD",
+    "ethereumtetherus": "ETHUSDT",
+    "ethereumtetherusperpetualcontract": "ETHUSDT.P",
+    "ethereumusdtperpetual": "ETHUSDT.P"
+  }
+}

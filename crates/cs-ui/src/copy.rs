@@ -5,13 +5,112 @@
 //! "win", "score", "edge", "confidence" or certainty. Arrows give the direction of a move that
 //! already happened; they carry text as well, so nothing relies on colour.
 
-use cs_core::time;
+use cs_core::{Timeframe, time};
 use cs_live::snapshot::{HtfView, Marker, ZoneKind, ZoneView};
 use cs_live::status::FeedStatus;
 
-/// The footer, always visible (wording given by the user).
-pub const FOOTER: &str = "No setup passed testing (0 of 59). Context only, not a signal. \
-Random entries lost about 0.4 to 0.55 R per trade after costs.";
+/// Net result of random entries (stop 1 ATR, target 1 R, Binance USDS-M costs) per symbol and
+/// time frame, R per trade, from `reports/gate-report.md` Appendix C (random-entry control):
+/// (symbol, time frame, discovery period, validation period).
+pub const RANDOM_ENTRY_R: [(&str, Timeframe, f64, f64); 6] = [
+    ("BTCUSDT", Timeframe::M5, -1.1004, -1.0099),
+    ("BTCUSDT", Timeframe::M15, -0.5668, -0.5326),
+    ("BTCUSDT", Timeframe::H1, -0.2314, -0.3296),
+    ("ETHUSDT", Timeframe::M5, -0.5882, -0.7437),
+    ("ETHUSDT", Timeframe::M15, -0.3358, -0.3919),
+    ("ETHUSDT", Timeframe::H1, -0.1167, -0.2453),
+];
+
+/// The footer, always visible (wording given by the user), with the random-entry loss for the
+/// symbol and time frame on screen.
+pub fn footer(symbol: &str, tf: Timeframe) -> String {
+    let head = "No setup passed testing (0 of 59). Context only, not a signal.";
+    match RANDOM_ENTRY_R
+        .iter()
+        .find(|(s, t, _, _)| *s == symbol && *t == tf)
+    {
+        Some((s, t, a, b)) => {
+            let (lo, hi) = (a.abs().min(b.abs()), a.abs().max(b.abs()));
+            format!(
+                "{head} Random entries on {} {} lost {lo:.2} to {hi:.2} R per trade after costs.",
+                s.trim_end_matches("USDT"),
+                t.label()
+            )
+        }
+        None => format!(
+            "{head} Random entries lost 0.12 to 1.10 R per trade after costs (BTC and ETH, 5m to 1h)."
+        ),
+    }
+}
+
+/// Screen reading toggle and states.
+pub const SCREEN_ON: &str = "\u{25C9} Screen reading ON";
+pub const SCREEN_OFF: &str = "\u{25CB} Screen reading off";
+pub const SCREEN_TIP: &str = "Reads symbol, time frame and last price from the TradingView window in front \
+(small regions, in memory, nothing saved or sent). Ctrl+Alt+S";
+pub const FOLLOW_SCREEN: &str = "Follow screen";
+
+/// One line under the header about what the screen shows.
+pub fn screen_line(state: &cs_vision::WatchState, manual: bool) -> String {
+    use cs_vision::read::{PageKind, SymbolRead};
+    use cs_vision::watch::WatchStatus;
+    if manual {
+        return "Manual pick: the screen is ignored.".into();
+    }
+    match state.status {
+        WatchStatus::Off => "Screen reading is off.".into(),
+        WatchStatus::NoEngine => "Screen reading unavailable: no OCR engine.".into(),
+        WatchStatus::Waiting => "Waiting for a TradingView chart window in front.".into(),
+        WatchStatus::Reading => match &state.reading {
+            None => "Reading the TradingView window\u{2026}".into(),
+            Some(r) if r.page != PageKind::Chart => "TradingView: no chart on this page.".into(),
+            Some(r) => {
+                let sym = match &r.symbol {
+                    SymbolRead::Unknown => "symbol not read".to_string(),
+                    SymbolRead::Supported { ticker, .. } | SymbolRead::Unsupported { ticker } => {
+                        ticker.clone()
+                    }
+                };
+                let tf = r.tf.as_ref().map_or_else(
+                    || "time frame not read".into(),
+                    cs_vision::parse::TfRead::label,
+                );
+                let px = r
+                    .price
+                    .map_or_else(|| "price not read".into(), |(p, _)| price(p));
+                format!("Screen: {sym} {tf} \u{00B7} {px}")
+            }
+        },
+    }
+}
+
+pub fn screen_unsupported(ticker: &str) -> String {
+    format!(
+        "UNSUPPORTED on screen: {ticker}. No feed for it, so no context. Supported: {} on 5m, 15m and 1h.",
+        cs_live::SUPPORTED_SYMBOLS.join(", ")
+    )
+}
+
+pub fn screen_unsupported_tf(ticker: &str, tf: &str) -> String {
+    format!(
+        "UNSUPPORTED time frame on screen: {ticker} {tf}. Context exists for 5m, 15m and 1h only."
+    )
+}
+
+pub fn mismatch(screen: f64, feed: f64, symbol: &str, diff_pct: f64) -> String {
+    format!(
+        "SOURCE MISMATCH: the screen shows {}, the {symbol} feed {} ({diff_pct:+.2} %). Context hidden until they agree.",
+        price(screen),
+        price(feed)
+    )
+}
+
+pub fn mismatch_short(diff_pct: f64) -> String {
+    format!("SOURCE MISMATCH ({diff_pct:+.2} %): screen and feed prices differ. Context hidden.")
+}
+
+/// Hotkey help, shown in the expanded panel.
+pub const HELP_KEYS: &str = "Keys: Ctrl+Alt+M mute \u{00B7} Ctrl+Alt+T click-through \u{00B7} Ctrl+Alt+H hide \u{00B7} Ctrl+Alt+S screen reading";
 
 pub const APP_TITLE: &str = "Candlescope context";
 pub const MUTE: &str = "MUTE";
@@ -44,8 +143,6 @@ pub const PULLBACK_NOTE: &str = "\"Healthy\" = smaller and slower than the move 
 
 pub const SET_OPACITY: &str = "Background opacity";
 pub const SET_CLICK: &str = "Click-through (mouse passes to the chart)";
-pub const SET_HOTKEYS: &str =
-    "Hotkeys: Ctrl+Alt+H show/hide, Ctrl+Alt+M mute, Ctrl+Alt+T click-through";
 pub const CLICK_ON: &str = "Click-through is ON: press Ctrl+Alt+T to use the panel again.";
 
 pub const MUTED_BODY: &str = "Muted. Panel content is hidden; the feed keeps running.";
@@ -590,10 +687,120 @@ mod tests {
             pullback_none(Some(40)),
             recorder(0.5, 12, Some(30)),
             recorder_short(0.5, Some(30)),
-            FOOTER.into(),
+            footer("BTCUSDT", Timeframe::M15),
+            footer("NVDAUSDT", Timeframe::M5),
             PULLBACK_NOTE.into(),
+            SCREEN_ON.into(),
+            SCREEN_OFF.into(),
+            SCREEN_TIP.into(),
+            FOLLOW_SCREEN.into(),
+            screen_unsupported("XAUUSD"),
+            screen_unsupported_tf("BTCUSD", "4h"),
+            mismatch(60_626.47, 1_704.15, "ETHUSDT", 3_457.5),
+            mismatch_short(-1.2),
+            HELP_KEYS.into(),
         ]);
+        for s in ["BTCUSDT", "ETHUSDT", "XAUUSD"] {
+            for tf in Timeframe::ALL {
+                v.push(footer(s, tf));
+            }
+        }
+        v.extend(screen_lines());
         v
+    }
+
+    fn screen_lines() -> Vec<String> {
+        use cs_vision::read::{PageKind, PriceFrom, Reading, SymbolRead};
+        use cs_vision::watch::{WatchState, WatchStatus};
+        let mut out = Vec::new();
+        for st in [
+            WatchStatus::Off,
+            WatchStatus::NoEngine,
+            WatchStatus::Waiting,
+            WatchStatus::Reading,
+        ] {
+            for page in [PageKind::Chart, PageKind::Other] {
+                for sym in [
+                    SymbolRead::Unknown,
+                    SymbolRead::Unsupported {
+                        ticker: "XAUUSD".into(),
+                    },
+                    SymbolRead::Supported {
+                        ticker: "BTCUSD".into(),
+                        exchange: "BTCUSDT".into(),
+                    },
+                ] {
+                    let s = WatchState {
+                        status: st,
+                        reading: Some(Reading {
+                            page,
+                            symbol: sym,
+                            tf: cs_vision::parse::parse_tf("15"),
+                            price: Some((60_626.47, PriceFrom::AxisLabel)),
+                            source: None,
+                            symbol_from: "symbol region",
+                            engine: None,
+                            ocr_calls: 1,
+                            read_ms: 1.0,
+                        }),
+                        ..WatchState::default()
+                    };
+                    out.push(screen_line(&s, false));
+                    out.push(screen_line(&s, true));
+                }
+            }
+        }
+        out
+    }
+
+    /// The footer quotes the random-entry loss of the symbol and time frame on screen, with
+    /// the numbers of gate-report.md Appendix C.
+    #[test]
+    fn footer_follows_symbol_and_time_frame() {
+        assert!(
+            footer("BTCUSDT", Timeframe::M5).contains("BTC 5m lost 1.01 to 1.10 R"),
+            "{}",
+            footer("BTCUSDT", Timeframe::M5)
+        );
+        assert!(footer("BTCUSDT", Timeframe::M15).contains("BTC 15m lost 0.53 to 0.57 R"));
+        assert!(footer("BTCUSDT", Timeframe::H1).contains("BTC 1h lost 0.23 to 0.33 R"));
+        assert!(footer("ETHUSDT", Timeframe::M5).contains("ETH 5m lost 0.59 to 0.74 R"));
+        assert!(footer("ETHUSDT", Timeframe::M15).contains("ETH 15m lost 0.34 to 0.39 R"));
+        assert!(footer("ETHUSDT", Timeframe::H1).contains("ETH 1h lost 0.12 to 0.25 R"));
+        let other = footer("XAUUSD", Timeframe::H4);
+        assert!(other.contains("0.12 to 1.10 R"), "{other}");
+        for s in ["BTCUSDT", "ETHUSDT", "XAUUSD"] {
+            for tf in Timeframe::ALL {
+                let f = footer(s, tf);
+                assert!(
+                    f.starts_with("No setup passed testing (0 of 59). Context only, not a signal.")
+                );
+            }
+        }
+        // Every row of the table is in the report it cites.
+        let report = include_str!("../../../reports/gate-report.md");
+        for (s, tf, a, b) in RANDOM_ENTRY_R {
+            for (period, v) in [("discovery", a), ("validation", b)] {
+                let row = format!("| {s} | {} | {period} |", tf.label());
+                let line = report
+                    .lines()
+                    .find(|l| l.starts_with(&row))
+                    .unwrap_or_else(|| panic!("{row} not in gate-report.md"));
+                assert!(line.contains(&format!("| {v:.4} |")), "{line} vs {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn help_line_names_every_hotkey() {
+        for k in [
+            "Ctrl+Alt+M mute",
+            "Ctrl+Alt+T click-through",
+            "Ctrl+Alt+H hide",
+            "Ctrl+Alt+S",
+        ] {
+            assert!(HELP_KEYS.contains(k), "{k}");
+        }
     }
 
     #[test]
@@ -613,6 +820,8 @@ mod tests {
             ("risk.rs", include_str!("risk.rs")),
             ("main.rs", include_str!("main.rs")),
             ("demo.rs", include_str!("demo.rs")),
+            ("screen.rs", include_str!("screen.rs")),
+            ("settings.rs", include_str!("settings.rs")),
         ];
         for (name, src) in files {
             let code = src.split("#[cfg(test)]").next().unwrap_or(src);

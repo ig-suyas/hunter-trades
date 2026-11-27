@@ -29,6 +29,17 @@ pub struct View<'a> {
     pub muted: bool,
     pub click_through: bool,
     pub hotkeys_ok: bool,
+    /// Screen reading: available (watcher running), on, manual override, one status line.
+    pub screen_avail: bool,
+    pub screen_on: bool,
+    pub manual: bool,
+    pub screen_line: String,
+    /// The screen shows a symbol or time frame without a feed (replaces the context).
+    pub screen_block: Option<String>,
+    /// Price handshake failed (replaces the context): long and compact wording.
+    pub mismatch: Option<(String, String)>,
+    /// Footer text for the symbol and time frame shown.
+    pub footer: String,
 }
 
 /// Inputs the user edits (kept by the app between frames).
@@ -53,6 +64,8 @@ pub enum Action {
     SetClickThrough(bool),
     StartDrag,
     BeginResize,
+    ToggleScreen,
+    FollowScreen,
 }
 
 /// Heights measured while drawing (for the layout check).
@@ -178,6 +191,28 @@ pub fn header(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) 
             }
         });
     });
+    ui.horizontal(|ui| {
+        let (label, col) = if v.screen_on {
+            (copy::SCREEN_ON, c(pal::LIVE))
+        } else {
+            (copy::SCREEN_OFF, c(pal::TEXT_DIM))
+        };
+        let b = Button::new(RichText::new(label).strong().color(col))
+            .fill(c(pal::BG_RAISED))
+            .stroke(Stroke::new(1.0, col));
+        let r = ui
+            .add_enabled(v.screen_avail, b)
+            .on_hover_text(copy::SCREEN_TIP);
+        if r.clicked() {
+            out.push(Action::ToggleScreen);
+        }
+        if v.screen_on && v.manual && ui.button(text(copy::FOLLOW_SCREEN)).clicked() {
+            out.push(Action::FollowScreen);
+        }
+        if !v.compact || !v.manual {
+            ui.add(egui::Label::new(dim(v.screen_line.clone())).truncate());
+        }
+    });
     if let Some(s) = v.sample {
         ui.label(RichText::new(s).strong().color(c(pal::WARN)));
     }
@@ -193,7 +228,10 @@ pub fn footer(ui: &mut Ui, v: &View, out: &mut Vec<Action>) {
             RichText::new(copy::drift_warning(d.offset_ms)).color(c(pal::WARN)),
         );
     }
-    wrap(ui, text(copy::FOOTER).size(pal::FONT_MIN));
+    wrap(ui, text(v.footer.clone()).size(pal::FONT_MIN));
+    if !v.compact {
+        wrap(ui, dim(copy::HELP_KEYS).size(pal::FONT_MIN));
+    }
     let r = v.recorder;
     let line = if v.compact {
         copy::recorder_short(r.days, r.last_age_s)
@@ -234,6 +272,15 @@ pub fn body(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) ->
             }
             wrap(ui, dim(copy::MUTED_HOW));
         }
+        return ui.cursor().top() - top;
+    }
+    if let Some(b) = &v.screen_block {
+        wrap(ui, warn(b.clone()));
+        return ui.cursor().top() - top;
+    }
+    if let Some((long, short)) = &v.mismatch {
+        let t = if v.compact { short } else { long };
+        wrap(ui, RichText::new(t.clone()).strong().color(c(pal::ALERT)));
         return ui.cursor().top() - top;
     }
     let Some(status) = v.status else {
@@ -384,11 +431,10 @@ fn expanded(ui: &mut Ui, v: &View, s: &ContextSnapshot, ctl: &mut Controls, out:
     if ui.checkbox(&mut ct, text(copy::SET_CLICK)).changed() {
         out.push(Action::SetClickThrough(ct));
     }
-    wrap(ui, dim(copy::SET_HOTKEYS));
     if !v.hotkeys_ok {
         wrap(
             ui,
-            RichText::new("Hotkeys could not be registered (another program uses them).")
+            RichText::new("Some hotkeys could not be registered (another program uses them).")
                 .color(c(pal::WARN)),
         );
     }
