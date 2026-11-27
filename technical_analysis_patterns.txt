@@ -1,0 +1,130 @@
+TECHNICAL ANALYSIS PATTERNS — COMPLETE REFERENCE
+
+This document collects the chart patterns and candlestick patterns
+listed in the conversation, organized by category.
+
+1. REVERSAL PATTERNS
+
+Bullish Reversal 1. Inverse Head and Shoulders 2. Double Bottom 3.
+Triple Bottom 4. Falling Wedge 5. Bullish Rounding Bottom 6. Bullish
+Quasimodo (QM) 7. Adam and Eve Bottom 8. Bullish Broadening Bottom 9.
+Bullish Dragon Pattern 10. Bump and Run Reversal (Bottom)
+
+Bearish Reversal 1. Head and Shoulders 2. Double Top 3. Triple Top 4.
+Rising Wedge 5. Bearish Rounding Top 6. Bearish Quasimodo (QM) 7. Adam
+and Eve Top 8. Bearish Broadening Top 9. Bearish Dragon Pattern 10. Bump
+and Run Reversal (Top)
+
+2. CONTINUATION PATTERNS
+
+Bullish Continuation 1. Bull Flag 2. Bull Pennant 3. Ascending Triangle
+4. Rising Rectangle 5. Bullish Symmetrical Triangle 6. Cup and Handle 7.
+Ascending Channel 8. Bullish Measured Move 9. Flat Base 10. High Tight
+Flag
+
+Bearish Continuation 1. Bear Flag 2. Bear Pennant 3. Descending Triangle
+4. Falling Rectangle 5. Bearish Symmetrical Triangle 6. Descending
+Channel 7. Bearish Measured Move 8. Low Tight Flag
+
+3. BILATERAL / NEUTRAL PATTERNS
+
+1.  Symmetrical Triangle
+
+2.  Rectangle (Trading Range)
+
+3.  Broadening Formation (Megaphone)
+
+4.  Ascending Broadening Wedge
+
+5.  Descending Broadening Wedge
+
+6.  Diamond Pattern
+
+7.  Diamond Top
+
+8.  Diamond Bottom
+
+9.  Expanding Triangle
+
+10. Contracting Triangle
+
+11. CANDLESTICK PATTERNS
+
+Bullish 1. Hammer 2. Inverted Hammer 3. Bullish Engulfing 4. Piercing
+Line 5. Morning Star 6. Morning Doji Star 7. Three White Soldiers 8.
+Tweezer Bottom 9. Bullish Harami 10. Bullish Harami Cross 11. Three
+Inside Up 12. Three Outside Up 13. Rising Three Methods 14. Bullish
+Marubozu 15. Dragonfly Doji
+
+Bearish 1. Hanging Man 2. Shooting Star 3. Bearish Engulfing 4. Dark
+Cloud Cover 5. Evening Star 6. Evening Doji Star 7. Three Black Crows 8.
+Tweezer Top 9. Bearish Harami 10. Bearish Harami Cross 11. Three Inside
+Down 12. Three Outside Down 13. Falling Three Methods 14. Bearish
+Marubozu 15. Gravestone Doji
+
+Neutral / Indecision 1. Doji 2. Long-Legged Doji 3. Spinning Top 4.
+High-Wave Candle 5. Rickshaw Man
+
+5. HARMONIC PATTERNS
+
+1.  Gartley
+
+2.  Butterfly
+
+3.  Bat
+
+4.  Crab
+
+5.  Deep Crab
+
+6.  Shark
+
+7.  Cypher
+
+8.  AB=CD
+
+9.  Three Drives Pattern
+
+10. Alternate Bat
+
+11. ADVANCED / OTHER PRICE ACTION PATTERNS
+
+12. Quasimodo (QM)
+
+13. 1-2-3 Reversal
+
+14. 1-2-3 Continuation
+
+15. ABCD Pattern
+
+16. Wolfe Waves
+
+17. Elliott Wave Patterns
+
+18. Three Push Pattern
+
+19. Failed Breakout
+
+20. Fakeout
+
+21. Spring (Wyckoff)
+
+22. Upthrust (Wyckoff)
+
+23. Accumulation
+
+24. Distribution
+
+25. Re-accumulation
+
+26. Re-distribution
+
+NOTES
+
+-   These categories contain different types of technical-analysis
+    concepts; they are not all traditional chart patterns.
+-   Candlestick patterns describe one or a small group of candles.
+    Harmonic patterns use Fibonacci-based price relationships. Wyckoff
+    structures describe phases or events in market behavior.
+-   A pattern does not guarantee a reversal or continuation. Context,
+    volume, timeframe, market structure, and confirmation all matter.

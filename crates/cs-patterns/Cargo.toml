@@ -1,0 +1,18 @@
+[package]
+name = "cs-patterns"
+description = "Streaming pattern detectors with no lookahead"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cs-core.workspace = true
+
+[dev-dependencies]
+# Only to load the real BTC 15m store file in the prefix-invariance test (skipped if absent).
+cs-data.workspace = true

@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+license = "UNLICENSED"
+publish = false
+
+# Shared third-party versions go here as phases add them. Keep the set lean
+# (12 GB RAM laptop): prefer small crates, no async runtime until cs-live needs one.
+[workspace.dependencies]
+cs-core = { path = "crates/cs-core" }
+cs-data = { path = "crates/cs-data" }
+cs-patterns = { path = "crates/cs-patterns" }
+# Phase 1 (see handoff section 4 for why each one): blocking HTTP and WebSocket clients on the
+# Windows-native TLS stack (SChannel), so no async runtime and no C crypto build.
+ureq = { version = "3.5", default-features = false, features = ["native-tls"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "native-tls"] }
+native-tls = "0.2"
+sha2 = "0.11"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+# OHLC and calendar code reads best with o/h/l/c and y/m/d names.
+many_single_char_names = "allow"
+must_use_candidate = "allow"
+float_cmp = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "deny"
+print_stdout = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+debug = "line-tables-only"

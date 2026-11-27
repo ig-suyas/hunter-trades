@@ -1,0 +1,6 @@
+msrv = "1.89"
+too-many-arguments-threshold = 8
+cognitive-complexity-threshold = 30
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true

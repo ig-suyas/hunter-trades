@@ -1,0 +1,42 @@
+# Build output
+/target/
+
+# Downloaded history, live recordings, recorder logs/lock/status, extracted video frames,
+# audio and transcripts, detector event files
+/data/
+
+# Logs and process files
+*.log
+*.pid
+
+# Raw input videos and audio (too large for git; trading.mp4 is ~2 GB, trading1.mp4 ~290 MB)
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.wav
+
+# Large generated report artefacts (Markdown reports and the SVG/HTML detector gallery stay tracked)
+/reports/**/*.csv
+/reports/**/*.parquet
+/reports/**/*.png
+/reports/**/*.zip
+
+# Secrets must never exist here, but ignore the usual names anyway
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.*
+credentials*.json
+.claude/settings.local.json
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
