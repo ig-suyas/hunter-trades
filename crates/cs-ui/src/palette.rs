@@ -24,6 +24,8 @@ pub const FONT_MIN: f32 = 14.0;
 pub const FONT_BODY: f32 = 15.0;
 pub const FONT_HEAD: f32 = 16.0;
 pub const FONT_BIG: f32 = 18.0;
+/// The main state (WAIT, BUY, SELL).
+pub const FONT_HERO: f32 = 30.0;
 
 pub fn c(rgb: [u8; 3]) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])

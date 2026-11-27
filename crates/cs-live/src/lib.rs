@@ -5,10 +5,12 @@
 //! `cs_backtest::market::Market::prepare` builds them). Updates happen only on closed candles,
 //! strictly forward; nothing already shown is ever repainted or removed.
 //!
-//! The GATE (Phase 4) found no setup that survives costs (0 of 59), so this crate produces
-//! **context only**: trend state, regime, volatility, session, zones, the latest sweep / `BOS` /
-//! `CHoCH` and the healthy-pullback flag. It has no direction call, score or probability, and it
-//! never places orders: only public market-data endpoints are used.
+//! The GATE (Phase 4) found no setup that survives costs (0 of 59). The context (trend state,
+//! regime, volatility, session, zones, the latest sweep / `BOS` / `CHoCH`, the healthy-pullback
+//! flag) is unchanged. At the user's request, [`signal`] runs the 10 pre-registered exploratory
+//! rules (all failed testing) through the backtest's own code and shows their past results next
+//! to every alert; [`journal`] logs and resolves those alerts. Nothing here places orders or
+//! holds keys: only public market-data endpoints are used.
 //!
 //! * [`kline`]: websocket and REST message parsing.
 //! * [`engine`]: [`engine::LiveEngine`], one closed candle at a time.
@@ -17,11 +19,16 @@
 //!   backfilled). The transport and the parity test drive this same code.
 //! * [`status`]: live / stale / disconnected, and clock drift.
 //! * [`feed`]: the transport thread (REST warm-up, websocket with reconnect and backoff).
+//! * [`signal`]: the frozen rules, the signal engine, past results and sizing.
+//! * [`journal`]: `data/signals/` (alert log, outcomes, paper account, limits, demo fills,
+//!   calibration and the `journal-report` text).
 
 pub mod engine;
 pub mod feed;
+pub mod journal;
 pub mod kline;
 pub mod pipeline;
+pub mod signal;
 pub mod snapshot;
 pub mod status;
 

@@ -1,6 +1,6 @@
 //! The overlay window: borderless, always on top, draggable and resizable, adjustable
 //! background opacity, click-through, global hotkeys and the MUTE kill switch. It only
-//! displays: there is no order code anywhere in the workspace.
+//! displays and logs: there is no order code anywhere in the workspace and no keys.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 use cs_core::Timeframe;
 use cs_live::feed::{FeedConfig, FeedHandle, Shared, spawn};
+use cs_live::journal::{self, Journal, Outcome};
+use cs_live::signal::rules;
+use cs_live::signal::stats::StatsBook;
 use cs_live::status::FeedStatus;
 use eframe::egui::{
     self, FontData, FontDefinitions, FontFamily, FontId, TextStyle, Vec2, ViewportCommand, vec2,
@@ -22,16 +25,18 @@ use cs_vision::read::PageKind;
 use cs_vision::source::{FrameSource, XcapSource};
 use cs_vision::{VisionConfig, WatchState, Watcher};
 
+use crate::board::{Arrival, Board};
 use crate::copy;
 use crate::demo::{self, DemoState};
 use crate::palette as pal;
 use crate::recorder::{self, RecorderInfo};
 use crate::screen;
-use crate::settings::Settings;
-use crate::view::{self, Action, Controls, View};
+use crate::settings::{Settings, parse_number};
+use crate::view::{self, Action, Controls, MainInput, View};
 
-pub const COMPACT: Vec2 = Vec2::new(330.0, 290.0);
-pub const EXPANDED: Vec2 = Vec2::new(440.0, 740.0);
+/// Main view (Details closed) and Details open.
+pub const MAIN: Vec2 = Vec2::new(390.0, 410.0);
+pub const DETAILS: Vec2 = Vec2::new(460.0, 820.0);
 
 /// Command line options.
 #[derive(Debug, Clone)]
@@ -41,28 +46,28 @@ pub struct Opts {
     /// Project root (holds `data/` and `reports/`).
     pub root: PathBuf,
     pub demo: Option<(DemoState, String)>,
-    pub expanded: bool,
+    pub details: bool,
     pub muted: bool,
     pub click_through: bool,
     pub screenshot: Option<PathBuf>,
-    pub entry: String,
-    pub stop: String,
     pub layout_check: bool,
     pub exit_after: Option<Duration>,
     /// Window size override (screenshots).
     pub size: Option<Vec2>,
     /// Window position restored from the settings file.
     pub pos: Option<[f32; 2]>,
-    pub opacity: f32,
-    pub account: String,
-    pub risk_pct: String,
+    pub settings: Settings,
     /// Screen reading on at start.
     pub screen: bool,
-    /// Read and write `data/overlay-settings.json` (off for demos, screenshots, checks).
+    /// Read and write `data/overlay-settings.json` and `data/signals/` (off for demos,
+    /// screenshots, checks).
     pub use_settings: bool,
     /// Demo of the SOURCE MISMATCH state.
     pub demo_mismatch: bool,
 }
+
+/// Outcomes from the background resolver: (alert id, outcome or problem).
+type Resolved = Vec<(String, Result<Outcome, String>)>;
 
 enum Source {
     Live(FeedHandle),
@@ -70,6 +75,8 @@ enum Source {
         shared: Arc<Mutex<Shared>>,
         state: DemoState,
         label: String,
+        /// The replay moment (static demos); `None` = wall clock.
+        now: Option<i64>,
     },
     Unsupported,
 }
@@ -89,7 +96,7 @@ pub struct OverlayApp {
     opts: Opts,
     source: Source,
     ctl: Controls,
-    compact: bool,
+    details: bool,
     muted: bool,
     click_through: bool,
     visible: bool,
@@ -118,6 +125,16 @@ pub struct OverlayApp {
     tolerance_pct: f64,
     saved: Settings,
     saved_at: Instant,
+    /// Signal view.
+    stats: Option<StatsBook>,
+    board: Board,
+    journal: Journal,
+    paper_since: i64,
+    resolver: Option<Receiver<Resolved>>,
+    resolve_at: Option<Instant>,
+    import_msg: Vec<String>,
+    hero_key: String,
+    hero_since: Instant,
 }
 
 fn load_fonts(ctx: &egui::Context) -> bool {
@@ -155,23 +172,18 @@ fn load_fonts(ctx: &egui::Context) -> bool {
     ok
 }
 
-fn style(ctx: &egui::Context, compact: bool) {
-    let body = if compact {
-        pal::FONT_MIN
-    } else {
-        pal::FONT_BODY
-    };
+fn style(ctx: &egui::Context) {
     ctx.all_styles_mut(|s| {
         s.text_styles = [
             (TextStyle::Small, FontId::proportional(pal::FONT_MIN)),
-            (TextStyle::Body, FontId::proportional(body)),
-            (TextStyle::Button, FontId::proportional(body)),
+            (TextStyle::Body, FontId::proportional(pal::FONT_BODY)),
+            (TextStyle::Button, FontId::proportional(pal::FONT_BODY)),
             (TextStyle::Heading, FontId::proportional(pal::FONT_HEAD)),
             (TextStyle::Monospace, FontId::monospace(pal::FONT_MIN)),
         ]
         .into();
-        s.spacing.item_spacing = vec2(6.0, 2.0);
-        s.spacing.button_padding = vec2(6.0, 3.0);
+        s.spacing.item_spacing = vec2(6.0, 3.0);
+        s.spacing.button_padding = vec2(7.0, 3.0);
         s.visuals = egui::Visuals::dark();
         s.visuals.override_text_color = Some(pal::c(pal::TEXT));
         s.visuals.panel_fill = egui::Color32::TRANSPARENT;
@@ -245,31 +257,14 @@ fn start_vision(opts: &Opts) -> (Option<Watcher>, Option<String>, f64) {
     }
 }
 
-fn make_source(opts: &Opts, symbol: &str, tf: Timeframe) -> Source {
-    if !cs_live::is_supported(symbol) {
-        return Source::Unsupported;
-    }
-    if let Some((st, _)) = &opts.demo {
-        let (shared, label) = demo::shared_for(&opts.root, *st);
-        return Source::Demo {
-            shared,
-            state: *st,
-            label,
-        };
-    }
-    Source::Live(spawn(FeedConfig::new(symbol, tf)))
-}
-
 impl OverlayApp {
     pub fn new(cc: &eframe::CreationContext<'_>, opts: Opts) -> OverlayApp {
-        let compact = !opts.expanded;
         let fonts = load_fonts(&cc.egui_ctx);
         if opts.layout_check {
             eprintln!("fonts: Segoe UI loaded = {fonts}");
         }
-        style(&cc.egui_ctx, compact);
+        style(&cc.egui_ctx);
         let keys = register_keys(&cc.egui_ctx);
-        let source = make_source(&opts, &opts.symbol, opts.tf);
         let (vision, vision_note, tolerance_pct) = start_vision(&opts);
         let screen_on = vision.is_some() && opts.screen;
         let mismatch = opts.demo_mismatch.then_some((
@@ -281,19 +276,49 @@ impl OverlayApp {
             cc.egui_ctx
                 .send_viewport_cmd(ViewportCommand::MousePassthrough(true));
         }
+        let st = &opts.settings;
+        let mut stats = StatsBook::load(&opts.root).ok();
+        let mut journal = if opts.use_settings {
+            Journal::load(&journal::dir(&opts.root))
+        } else {
+            Journal::in_memory()
+        };
+        let mut board = Board::default();
+        let mut symbol = opts.symbol.clone();
+        let mut tf = opts.tf;
+        let source = match &opts.demo {
+            Some((ds, _)) if cs_live::is_supported(&symbol) => {
+                let d = demo::build(&opts.root, *ds, stats.as_ref());
+                symbol.clone_from(&d.symbol);
+                tf = d.tf;
+                if d.stats.is_some() {
+                    stats = d.stats;
+                }
+                journal = d.journal;
+                board = d.board;
+                let shared = Arc::new(Mutex::new(d.shared));
+                if *ds == DemoState::Replay {
+                    demo::start_replay(&opts.root, &shared);
+                }
+                Source::Demo {
+                    shared,
+                    state: *ds,
+                    label: d.label,
+                    now: d.now,
+                }
+            }
+            _ => make_source(&symbol, tf),
+        };
         OverlayApp {
             ctl: Controls {
-                symbol: opts.symbol.clone(),
-                tf: opts.tf,
-                opacity: opts.opacity.clamp(pal::MIN_OPACITY, 1.0),
-                account: opts.account.clone(),
-                risk_pct: opts.risk_pct.clone(),
-                entry: opts.entry.clone(),
-                stop: opts.stop.clone(),
-                funding_n: "1".into(),
-                focus_risk: opts.screenshot.is_some() && !opts.entry.is_empty(),
+                symbol,
+                tf,
+                opacity: st.opacity.clamp(pal::MIN_OPACITY, 1.0),
+                account: st.account.clone(),
+                risk_pct: st.risk_pct.clone(),
+                limits: st.limits,
             },
-            compact,
+            details: opts.details,
             muted: opts.muted,
             click_through: opts.click_through,
             visible: true,
@@ -318,10 +343,26 @@ impl OverlayApp {
             gate: MismatchGate::new(2),
             mismatch,
             tolerance_pct,
-            saved: Settings::default(),
+            saved: opts.settings.clone(),
             saved_at: Instant::now(),
+            stats,
+            board,
+            journal,
+            paper_since: st.paper_since,
+            resolver: None,
+            resolve_at: None,
+            import_msg: Vec::new(),
+            hero_key: String::new(),
+            hero_since: Instant::now(),
             source,
             opts,
+        }
+    }
+
+    fn now(&self) -> i64 {
+        match &self.source {
+            Source::Demo { now: Some(t), .. } => *t,
+            _ => cs_live::now_ms(),
         }
     }
 
@@ -329,7 +370,8 @@ impl OverlayApp {
     fn switch_feed(&mut self, sym: &str, tf: Timeframe) {
         self.ctl.symbol = sym.to_string();
         self.ctl.tf = tf;
-        self.source = make_source(&self.opts, sym, tf);
+        self.source = make_source(sym, tf);
+        self.board.reset();
         self.gate.reset();
         if !self.opts.demo_mismatch {
             self.mismatch = None;
@@ -406,13 +448,29 @@ impl OverlayApp {
                 vp.inner_rect.map(|r| [r.width(), r.height()]),
             )
         });
+        let limits = self.ctl.limits;
         Settings {
             pos: pos.or(self.saved.pos),
-            size: size.or(self.saved.size),
+            // The main-view size only (Details open uses its own default size).
+            size: if self.details {
+                self.saved.size
+            } else {
+                size.or(self.saved.size)
+            },
             opacity: self.ctl.opacity,
-            compact: self.compact,
-            account: self.ctl.account.clone(),
-            risk_pct: self.ctl.risk_pct.clone(),
+            details_open: self.details,
+            account: if parse_number(&self.ctl.account).is_some_and(|x| x > 0.0) {
+                self.ctl.account.clone()
+            } else {
+                self.saved.account.clone()
+            },
+            risk_pct: if parse_number(&self.ctl.risk_pct).is_some_and(|x| x > 0.0 && x <= 100.0) {
+                self.ctl.risk_pct.clone()
+            } else {
+                self.saved.risk_pct.clone()
+            },
+            limits,
+            paper_since: self.paper_since,
             symbol: if cs_live::is_supported(&self.ctl.symbol) {
                 self.ctl.symbol.clone()
             } else {
@@ -448,6 +506,7 @@ impl OverlayApp {
                 shared,
                 state,
                 label,
+                ..
             } => {
                 let s = shared
                     .lock()
@@ -459,16 +518,31 @@ impl OverlayApp {
         }
     }
 
+    fn import_fills(&mut self, text: Option<String>) {
+        let d = journal::dir(&self.opts.root);
+        let text = text.or_else(|| std::fs::read_to_string(journal::fills_path(&d)).ok());
+        let Some(text) = text else {
+            self.import_msg = vec![copy::FILLS_HOW.to_string()];
+            return;
+        };
+        let imp = journal::import_fills(&self.journal, &text);
+        if self.journal.persist
+            && let Err(e) = journal::write_trades(&d, &imp)
+        {
+            eprintln!("demo trades not written: {e}");
+        }
+        self.import_msg = copy::import_lines(&imp);
+    }
+
     fn apply(&mut self, ctx: &egui::Context, a: Action) {
         match a {
             Action::ToggleMute => self.muted = !self.muted,
-            Action::ToggleCompact => {
-                self.compact = !self.compact;
-                style(ctx, self.compact);
-                ctx.send_viewport_cmd(ViewportCommand::InnerSize(if self.compact {
-                    COMPACT
+            Action::ToggleDetails => {
+                self.details = !self.details;
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(if self.details {
+                    DETAILS
                 } else {
-                    EXPANDED
+                    self.saved.size.map_or(MAIN, |[w, h]| egui::vec2(w, h))
                 }));
             }
             Action::SetFeed(sym, tf) => {
@@ -492,6 +566,51 @@ impl OverlayApp {
             Action::BeginResize => ctx.send_viewport_cmd(ViewportCommand::BeginResize(
                 egui::viewport::ResizeDirection::SouthEast,
             )),
+            Action::ResetPaper => self.paper_since = self.now(),
+            Action::ImportFills => self.import_fills(None),
+        }
+    }
+
+    /// Resolve the journal's pending alerts over the exchange's public endpoints, in the
+    /// background (live runs only; at most every 60 s while something is pending).
+    fn resolve(&mut self) {
+        if let Some(rx) = &self.resolver
+            && let Ok(out) = rx.try_recv()
+        {
+            self.resolver = None;
+            if let Err(e) = self.journal.set_outcomes(&out) {
+                eprintln!("journal not written: {e}");
+            }
+        }
+        if !self.opts.use_settings
+            || self.resolver.is_some()
+            || self
+                .resolve_at
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
+        {
+            return;
+        }
+        self.resolve_at = Some(Instant::now());
+        let now = cs_live::now_ms();
+        let rows: Vec<_> = self
+            .journal
+            .pending()
+            .into_iter()
+            .filter(|r| now >= r.entry_time + r.tf.ms())
+            .cloned()
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let ok = std::thread::Builder::new()
+            .name("cs-ui resolver".into())
+            .spawn(move || {
+                let _ = tx.send(journal::resolve_pending_rest(&rows, now));
+            })
+            .is_ok();
+        if ok {
+            self.resolver = Some(rx);
         }
     }
 
@@ -534,6 +653,13 @@ impl OverlayApp {
     }
 }
 
+fn make_source(symbol: &str, tf: Timeframe) -> Source {
+    if !cs_live::is_supported(symbol) {
+        return Source::Unsupported;
+    }
+    Source::Live(spawn(FeedConfig::new(symbol, tf)))
+}
+
 impl eframe::App for OverlayApp {
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
@@ -570,6 +696,19 @@ impl eframe::App for OverlayApp {
                 self.muted, self.click_through, self.visible, st, sh.stats.frames, sh.stats.applied
             );
         }
+        // A CSV dropped on the panel is imported as demo fills.
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        for p in dropped {
+            if p.extension().and_then(|x| x.to_str()) == Some("csv") {
+                self.import_fills(std::fs::read_to_string(&p).ok());
+            }
+        }
         if self
             .recorder_at
             .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
@@ -585,22 +724,24 @@ impl eframe::App for OverlayApp {
                 self.exit_logged = true;
                 let (sh, st, _) = self.read();
                 eprintln!(
-                    "state at exit: status {:?}, warm-up candles {}, snapshot as of {}, last price {}, funding {:?}, drift {:?}, reconnects {}, stats {:?}, note {:?}",
+                    "state at exit: status {:?}, warm-up candles {}, snapshot as of {}, last price {}, drift {:?}, reconnects {}, stats {:?}, alerts {}, journal rows {}, note {:?}",
                     st,
                     sh.warmup_candles,
                     sh.snapshot
                         .map_or_else(|| "none".into(), |s| cs_core::time::fmt_minute(s.close_at)),
                     sh.last_price,
-                    sh.mark.map(|m| m.funding_rate),
                     sh.drift,
                     sh.reconnects,
                     sh.stats,
+                    sh.signals.len(),
+                    self.journal.rows.len(),
                     sh.note
                 );
             }
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
         self.process_screen();
+        self.resolve();
         self.save_settings(ctx);
         self.screenshot(ctx);
         // Faster repaints while screen reading is on, so a switch shows within ~0.25 s.
@@ -611,16 +752,76 @@ impl eframe::App for OverlayApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frames += 1;
         let (shared, status, sample) = self.read();
+        let now = self.now();
         let symbol = self.ctl.symbol.clone();
+        let account = parse_number(&self.ctl.account).unwrap_or(f64::NAN);
+        let risk_pct = parse_number(&self.ctl.risk_pct).unwrap_or(f64::NAN);
+        // Alerts that arrived since the last frame: decided once and logged.
+        let hidden = if self.muted {
+            "muted"
+        } else if self.mismatch.is_some() {
+            "mismatch"
+        } else if self.screen_block.is_some() {
+            "screen"
+        } else {
+            ""
+        };
+        self.board.update(
+            &shared,
+            &Arrival {
+                now,
+                stats: self.stats.as_ref(),
+                limits: self.ctl.limits,
+                account,
+                risk_pct,
+                hidden: hidden.to_string(),
+            },
+            &mut self.journal,
+        );
+        let hold = journal::hold(&self.ctl.limits, &journal::today(&self.journal.rows, now));
+        let active = self.board.active(&shared);
+        // Rules tested on this time frame (none on 5m), known before the feed reports in.
+        let n_rules = rules::rules_for(self.ctl.tf).len();
+        let main = view::main_model(&MainInput {
+            muted: self.muted,
+            supported: !matches!(self.source, Source::Unsupported),
+            symbol: &symbol,
+            screen_block: self.screen_block.as_deref(),
+            mismatch: self.mismatch.is_some(),
+            n_rules,
+            status,
+            has_snapshot: shared.snapshot.is_some(),
+            stats: self.stats.as_ref(),
+            active,
+            disagree: self.board.disagree(now),
+            hold,
+            account: self.board.sizing().0,
+            risk_pct: self.board.sizing().1,
+            offset_s: self.local_offset_s,
+        });
+        if main.key != self.hero_key {
+            self.hero_key.clone_from(&main.key);
+            self.hero_since = Instant::now();
+        }
+        // The hero fades in over 0.35 s (not in screenshot runs).
+        let reveal = if self.opts.screenshot.is_some() {
+            1.0
+        } else {
+            (self.hero_since.elapsed().as_secs_f32() / 0.35).min(1.0)
+        };
+        if reveal < 1.0 {
+            ui.ctx().request_repaint();
+        }
         let v = View {
             symbol: &symbol,
+            tf: self.ctl.tf,
             status,
             shared: &shared,
             sample: sample.as_deref(),
-            now_ms: cs_live::now_ms(),
+            now_ms: now,
             local_offset_s: self.local_offset_s,
             recorder: self.recorder,
-            compact: self.compact,
+            details: self.details,
             muted: self.muted,
             click_through: self.click_through,
             hotkeys_ok: self.keys.as_ref().is_some_and(|k| k.all_ok),
@@ -632,12 +833,9 @@ impl eframe::App for OverlayApp {
                 (None, Some(n)) => format!("Screen reading unavailable: {n}."),
                 (None, None) => "Screen reading unavailable.".into(),
             },
-            screen_block: self.screen_block.clone(),
             mismatch: self
                 .mismatch
-                .map(|(s, f, d)| (copy::mismatch(s, f, &symbol, d), copy::mismatch_short(d))),
-            // While the screen shows a symbol or time frame without a feed, the footer does not
-            // quote the numbers of the feed that is still running underneath.
+                .map(|(s, f, d)| copy::mismatch(s, f, &symbol, d)),
             debug_front: self.screen_state.front_debug.clone(),
             debug_failures: self
                 .screen_state
@@ -648,61 +846,62 @@ impl eframe::App for OverlayApp {
                 .rev()
                 .cloned()
                 .collect(),
-            footer: if self.screen_block.is_some() {
-                copy::footer("", self.ctl.tf)
-            } else {
-                copy::footer(&symbol, self.ctl.tf)
-            },
+            main,
+            reveal,
+            stats: self.stats.as_ref(),
+            active,
+            journal: &self.journal,
+            paper_since: self.paper_since,
+            hold,
+            import_msg: &self.import_msg,
         };
         let fill = pal::bg(self.ctl.opacity);
         let frame = |top: bool| {
             egui::Frame::new()
                 .fill(fill)
-                .inner_margin(egui::Margin::symmetric(8, if top { 6 } else { 5 }))
+                .inner_margin(egui::Margin::symmetric(10, if top { 7 } else { 6 }))
         };
         let mut acts = Vec::new();
         let h = egui::Panel::top("header")
             .frame(frame(true).stroke(egui::Stroke::NONE))
             .show(ui, |ui| view::header(ui, &v, &mut self.ctl, &mut acts));
-        let f = egui::Panel::bottom("footer")
-            .frame(frame(false))
-            .show(ui, |ui| view::footer(ui, &v, &mut acts));
         let b = egui::CentralPanel::default()
             .frame(frame(false))
-            .show(ui, |ui| {
-                let avail = ui.available_height();
-                (view::body(ui, &v, &mut self.ctl, &mut acts), avail)
-            });
+            .show(ui, |ui| view::body(ui, &v, &mut self.ctl, &mut acts));
+        let win = ui.ctx().content_rect().size();
         self.layout = view::Layout_ {
             header: h.response.rect.height(),
-            footer: f.response.rect.height(),
-            body_needed: b.inner.0,
-            body_avail: b.inner.1,
+            main_needed: b.inner,
+            window: win.y,
         };
         if self.opts.layout_check && !self.layout_printed && self.frames >= 4 {
             self.layout_printed = true;
             let l = self.layout;
-            let glyphs = "\u{25C9}\u{2026}\u{2261}\u{25CF}\u{25B2}\u{2715}\u{25CB}\u{2191}\u{2193}\u{2194}\u{25BE}\u{25B4}\u{25E2}\u{26A0}\u{00B7}\u{2013}";
+            let glyphs = "\u{25C9}\u{2026}\u{2261}\u{25CF}\u{25B2}\u{2715}\u{25CB}\u{2191}\u{2193}\u{2194}\u{25BE}\u{25B8}\u{25E2}\u{26A0}\u{00B7}\u{2013}\u{2192}";
             let has = ui
                 .ctx()
                 .fonts_mut(|f| f.has_glyphs(&FontId::proportional(pal::FONT_MIN), glyphs));
-            let win = ui.ctx().content_rect().size();
+            // Header + main view + the central panel's top and bottom margins (6 + 6).
+            let used = l.header + l.main_needed + 12.0;
             eprintln!(
-                "layout: window {:.0}x{:.0}, header {:.0}, footer {:.0}, body needs {:.0} of {:.0} available -> {}; all glyphs present: {has}",
+                "layout: window {:.0}x{:.0}, state {:?}, items {:?}, header {:.0}, main view needs {:.0}, total {:.0} -> {}; min font {} pt; all glyphs present: {has}",
                 win.x,
                 win.y,
+                v.main.state,
+                v.main.items(v.sample.is_some()),
                 l.header,
-                l.footer,
-                l.body_needed,
-                l.body_avail,
-                if l.body_needed <= l.body_avail + 0.5 || !self.compact {
+                l.main_needed,
+                used,
+                if used <= l.window + 0.5 {
                     "fits"
                 } else {
                     "OVERFLOW"
-                }
+                },
+                pal::FONT_MIN
             );
         }
-        for a in acts {
+        let ctl_done = std::mem::take(&mut acts);
+        for a in ctl_done {
             self.apply(ui.ctx(), a);
         }
     }

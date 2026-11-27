@@ -2,9 +2,10 @@
 //!
 //! Phase 3 adds the block bootstrap ([`bootstrap`]); Phase 4 adds the HAC t-test and
 //! Benjamini-Hochberg FDR control ([`hyp`]) and rolling walk-forward windows ([`walkforward`]);
-//! the probability model follows in Phase 5. Advisory only: nothing in this workspace places
-//! orders.
+//! the signal view adds the Beta-Binomial credible interval of a hit rate ([`beta`]). Advisory
+//! only: nothing in this workspace places orders.
 
+pub mod beta;
 pub mod bootstrap;
 pub mod hyp;
 pub mod walkforward;

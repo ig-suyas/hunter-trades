@@ -26,6 +26,7 @@ use tungstenite::stream::MaybeTlsStream;
 use crate::kline::{MarkMsg, parse_rest_klines};
 use crate::now_ms;
 use crate::pipeline::{PipeStats, Pipeline};
+use crate::signal::{Signal, TradeState};
 use crate::snapshot::ContextSnapshot;
 use crate::status::{CLOSE_GRACE_MS, Drift, FeedStatus, classify};
 
@@ -67,6 +68,8 @@ pub fn default_warmup(tf: Timeframe) -> usize {
 }
 
 /// State shared with the panel.
+// Independent status flags of one connection (connected, ever connected, warm-up done, rules).
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct Shared {
     pub connected: bool,
@@ -82,6 +85,13 @@ pub struct Shared {
     /// Latest problem or phase, in plain words.
     pub note: String,
     pub stats: PipeStats,
+    /// A frozen rule covers this time frame (the signal engine runs).
+    pub has_rules: bool,
+    /// Every alert of this feed so far (append-only) and the state of its trade.
+    pub signals: Vec<Signal>,
+    pub signal_states: Vec<TradeState>,
+    /// Latest signal-engine problem, if any.
+    pub signal_error: Option<String>,
 }
 
 impl Default for Shared {
@@ -99,6 +109,10 @@ impl Default for Shared {
             warmup_candles: 0,
             note: "starting".into(),
             stats: PipeStats::default(),
+            has_rules: false,
+            signals: Vec::new(),
+            signal_states: Vec::new(),
+            signal_error: None,
         }
     }
 }
@@ -306,6 +320,21 @@ fn publish(shared: &Mutex<Shared>, p: &Pipeline) {
     s.stats = p.stats;
     s.last_price = p.last_price;
     s.mark = p.mark;
+    publish_signals(&mut s, p);
+}
+
+/// Copies the alerts (append-only, so only new ones are added) and their trade states.
+pub fn publish_signals(s: &mut Shared, p: &Pipeline) {
+    let Some(se) = p.signal_engine() else {
+        s.has_rules = false;
+        return;
+    };
+    s.has_rules = true;
+    for x in &se.signals()[s.signals.len().min(se.signals().len())..] {
+        s.signals.push(x.clone());
+    }
+    s.signal_states = se.states().to_vec();
+    s.signal_error.clone_from(&se.last_error);
 }
 
 // One loop with its reconnect state in locals reads better than splitting it up.
@@ -318,6 +347,7 @@ fn run(cfg: &FeedConfig, shared: &Mutex<Shared>, stop: &AtomicBool) {
     let mut tclient = Client::new(Duration::from_millis(250));
     tclient.max_retries = 0;
     let mut pipe = Pipeline::new(&cfg.symbol, cfg.tf.label(), cfg.tf.ms());
+    lock(shared).has_rules = pipe.signal_engine().is_some();
     let mut offset = 0i64;
     let mut last_drift = Instant::now();
     let mut attempt = 0u32;
@@ -402,6 +432,7 @@ fn run(cfg: &FeedConfig, shared: &Mutex<Shared>, stop: &AtomicBool) {
                     match ws.read() {
                         Ok(Message::Text(t)) => {
                             got_data = true;
+                            let version = pipe.signal_version;
                             let applied = {
                                 let c = &mut client;
                                 let mut bf = |from: i64, to: i64| {
@@ -417,7 +448,7 @@ fn run(cfg: &FeedConfig, shared: &Mutex<Shared>, stop: &AtomicBool) {
                                 s.mark = pipe.mark;
                                 s.stats = pipe.stats;
                             }
-                            if !applied.is_empty() {
+                            if !applied.is_empty() || pipe.signal_version != version {
                                 publish(shared, &pipe);
                             }
                         }

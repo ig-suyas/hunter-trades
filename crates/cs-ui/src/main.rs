@@ -1,21 +1,23 @@
-//! `candlescope-overlay`: the always-on-top context panel.
+//! `candlescope-overlay`: the always-on-top panel.
 //!
 //! ```text
-//! candlescope-overlay [--symbol BTCUSDT] [--tf 15m] [--root <project folder>] [--expanded]
+//! candlescope-overlay [--symbol BTCUSDT] [--tf 15m] [--root <project folder>] [--details]
 //!                     [--muted] [--click-through]
-//!                     [--demo live|stale|disconnected|nodata|unsupported|muted|replay]
-//!                     [--entry <price> --stop <price>] [--screenshot <png>] [--layout-check]
-//!                     [--exit-after <seconds>] [--size <W>x<H>]
-//!                     [--screen on|off] [--no-settings]
+//!                     [--demo wait|up|down|disagree|no-rule|low-evidence|guardrail|
+//!                             live|stale|disconnected|nodata|unsupported|mismatch|replay]
+//!                     [--screenshot <png>] [--layout-check] [--exit-after <seconds>]
+//!                     [--size <W>x<H>] [--screen on|off] [--no-settings]
 //! ```
 //!
-//! Settings (position, size, opacity, mode, account size, risk %, last symbol and time frame,
-//! screen reading on/off) are restored from `data/overlay-settings.json`; arguments win over
-//! the file. Demo, screenshot and layout-check runs neither read nor write the file and never
-//! capture the screen.
+//! Settings (position, size, opacity, Details open or closed, account size, risk %, daily
+//! limits, last symbol and time frame, screen reading on/off) are restored from
+//! `data/overlay-settings.json`; arguments win over the file. Demo, screenshot and layout-check
+//! runs neither read nor write the file or `data/signals/`, and never capture the screen. The
+//! "up" and "down" demos are real alerts from a replay of stored pre-seal candles.
 //!
-//! Context only: the GATE found no setup that survives costs (0 of 59). It displays; it never
-//! places orders and holds no keys. Network use: Binance public market data only.
+//! The rules shown all failed testing (0 of 59 setups survived); every alert carries its past
+//! results and "No edge shown in testing". It never places orders and holds no keys. Network
+//! use: Binance public market data only.
 
 #![windows_subsystem = "windows"]
 // UI state is a handful of independent on/off flags, and egui layout code reads best top to
@@ -23,14 +25,15 @@
 #![allow(clippy::struct_excessive_bools, clippy::too_many_lines)]
 
 mod app;
+mod board;
 mod copy;
 mod demo;
 mod palette;
 mod png;
 mod recorder;
-mod risk;
 mod screen;
 mod settings;
+mod signal_copy;
 mod view;
 
 use std::path::PathBuf;
@@ -63,20 +66,16 @@ fn parse() -> Result<app::Opts, String> {
         tf: st.tf,
         root,
         demo: None,
-        expanded: !st.compact,
+        details: st.details_open,
         muted: false,
         click_through: false,
         screenshot: None,
-        entry: String::new(),
-        stop: String::new(),
         layout_check: false,
         exit_after: None,
         size: st.size.map(|[w, h]| egui::vec2(w, h)),
         pos: st.pos,
-        opacity: st.opacity,
-        account: st.account.clone(),
-        risk_pct: st.risk_pct.clone(),
         screen: st.screen_reading,
+        settings: st,
         use_settings: !check_run,
         demo_mismatch: false,
     };
@@ -105,8 +104,8 @@ fn parse() -> Result<app::Opts, String> {
                 }
                 o.demo = Some((st, v));
             }
-            "--expanded" => {
-                o.expanded = true;
+            "--details" => {
+                o.details = true;
                 o.size = None;
             }
             "--screen" => {
@@ -120,8 +119,6 @@ fn parse() -> Result<app::Opts, String> {
             "--muted" => o.muted = true,
             "--click-through" => o.click_through = true,
             "--screenshot" => o.screenshot = Some(PathBuf::from(val()?)),
-            "--entry" => o.entry = val()?,
-            "--stop" => o.stop = val()?,
             "--layout-check" => o.layout_check = true,
             "--exit-after" => {
                 let v: u64 = val()?
@@ -150,10 +147,10 @@ fn parse() -> Result<app::Opts, String> {
 
 fn main() -> Result<(), String> {
     let opts = parse()?;
-    let size = opts.size.unwrap_or(if opts.expanded {
-        app::EXPANDED
+    let size = opts.size.unwrap_or(if opts.details {
+        app::DETAILS
     } else {
-        app::COMPACT
+        app::MAIN
     });
     let vp = egui::ViewportBuilder::default()
         .with_title(copy::APP_TITLE)

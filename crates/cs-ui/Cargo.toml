@@ -1,6 +1,6 @@
 [package]
 name = "cs-ui"
-description = "Always-on-top context overlay (context only, never signals or orders)"
+description = "Always-on-top overlay: alerts of the 10 frozen rules (all failed testing) with their past results, market context in Details; never orders"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 cs-core.workspace = true
 cs-live.workspace = true
-# Only the Phase 3 cost model (`cost::CostModel`) for the risk calculator; the engine is not used.
+# The Phase 3 cost model (`cost::CostModel`) for the round-trip cost estimate in Details.
 cs-backtest.workspace = true
 cs-data.workspace = true
 cs-patterns.workspace = true

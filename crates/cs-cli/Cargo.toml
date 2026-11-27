@@ -16,6 +16,9 @@ cs-data.workspace = true
 cs-patterns.workspace = true
 cs-backtest.workspace = true
 cs-stats.workspace = true
+# Signal view: the frozen rule list (checked against the research enumeration) and the journal
+# report.
+cs-live.workspace = true
 # Combined results hash of a backtest batch (already in the tree).
 sha2.workspace = true
 serde_json.workspace = true

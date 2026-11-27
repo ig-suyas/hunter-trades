@@ -32,7 +32,7 @@ pub fn decide(r: &Reading, cur_sym: &str, cur_tf: Timeframe) -> Decision {
             switch: None,
             block: Some(copy::screen_unsupported(ticker)),
         },
-        SymbolRead::Supported { ticker, exchange } => {
+        SymbolRead::Supported { exchange, .. } => {
             let tf = match &r.tf {
                 // Time frame not read this time: keep the current one.
                 None => cur_tf,
@@ -41,7 +41,7 @@ pub fn decide(r: &Reading, cur_sym: &str, cur_tf: Timeframe) -> Decision {
                     None => {
                         return Decision {
                             switch: None,
-                            block: Some(copy::screen_unsupported_tf(ticker, &t.raw)),
+                            block: Some(copy::screen_unsupported_tf(&t.raw)),
                         };
                     }
                 },

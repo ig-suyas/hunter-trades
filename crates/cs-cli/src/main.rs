@@ -6,6 +6,7 @@
 mod backtest;
 mod detect;
 mod research;
+mod signals;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -57,6 +58,14 @@ Commands:
                  --final            open the sealed holdout ONCE (creates reports/holdout.lock,
                                     refuses while it exists) for finalists that passed validation
                  --reports-dir reports  --threads 6
+  rule-stats     past results of the 10 frozen exploratory rules (all failed the GATE) for the
+                 signal view: discovery + validation periods only (the sealed holdout is never
+                 loaded), checked against reports/research/validation.json; writes
+                 reports/rule-stats.json and reports/rule-stats.md  --reports-dir reports
+  journal-report your logged demo trades (data/signals/demo-trades.csv, imported in the panel):
+                 count, net R, win rate, expectancy with an 80 % block-bootstrap interval, max
+                 drawdown, past vs actual per rule; PASS only with >= 100 trades, net R > 0 and
+                 the interval's lower bound > 0  --dir data/signals
   record-status  print the recorder's status file
   record-stop    ask a running recorder to stop (creates data/live/STOP)
 
@@ -417,6 +426,20 @@ fn main() -> ExitCode {
         "detect" => cmd_detect(&a),
         "backtest" => cmd_backtest(&a),
         "research" => cmd_research(&a),
+        "rule-stats" => signals::run(
+            &research::Opts {
+                data: a.data_dir(),
+                reports: PathBuf::from(a.get("--reports-dir").unwrap_or("reports")),
+                threads: 1,
+            },
+            &|s| out(s),
+        ),
+        "journal-report" => {
+            out(&cs_live::journal::report(&PathBuf::from(
+                a.get("--dir").unwrap_or("data/signals"),
+            )));
+            Ok(())
+        }
         "record-status" => record::status_text(&a.data_dir().live())
             .map(|s| out(&s))
             .map_err(|e| e.to_string()),

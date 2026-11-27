@@ -1,8 +1,10 @@
-# Starts the Candlescope context overlay (context only: no signals, no orders).
+# Starts the Candlescope overlay (WAIT/BUY/SELL from the 10 frozen rules, which all failed testing,
+# with their past results next to every alert; market context in Details; never places orders).
 # Builds the release binary first if it is missing or older than any source file, then starts it
 # from the project folder so it finds data\, config\ and reports\. Extra arguments go to the
-# overlay, e.g.:  scripts\start-overlay.ps1 --symbol ETHUSDT --tf 5m --expanded
-# Settings (position, size, opacity, mode, account, risk, symbol, screen reading) are restored
+# overlay, e.g.:  scripts\start-overlay.ps1 --symbol ETHUSDT --tf 1h --details
+# Settings (position, size, opacity, Details open, account size, risk %, daily limits, symbol,
+# time frame, screen reading) are restored
 # from data\overlay-settings.json; arguments win over the file.
 
 param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $OverlayArgs)

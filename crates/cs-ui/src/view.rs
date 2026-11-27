@@ -1,23 +1,189 @@
-//! Drawing the panel. Pure presentation: reads the feed state, returns the user's actions.
-//! Every piece of text comes from [`crate::copy`].
+//! Drawing the panel. The main view is built from a [`MainModel`] (a pure function of the
+//! state, unit-tested to hold only the listed items); Details is one collapsible section below
+//! it. Every word comes from [`crate::copy`] or, for the signal panel only,
+//! [`crate::signal_copy`].
 
 use cs_core::Timeframe;
 use cs_live::feed::Shared;
+use cs_live::journal::{self, Hold, Journal, Limits};
+use cs_live::signal::rules::{self, RuleDef};
+use cs_live::signal::stats::{RuleStats, StatsBook};
+use cs_live::signal::{Signal, sizing};
 use cs_live::snapshot::ContextSnapshot;
 use cs_live::status::FeedStatus;
 use eframe::egui::{
-    self, Align, Button, Color32, ComboBox, CornerRadius, Frame, Layout, Margin, RichText, Sense,
-    Stroke, TextEdit, Ui, vec2,
+    self, Align, Button, Color32, ComboBox, CornerRadius, Layout, RichText, Sense, Stroke,
+    TextEdit, Ui, vec2,
 };
 
 use crate::copy;
 use crate::palette::{self as pal, c};
 use crate::recorder::RecorderInfo;
-use crate::risk;
+use crate::signal_copy::{self, Row};
+
+/// Everything the main view may contain (window chrome, the drag strip and the resize grip,
+/// aside). A test checks every state against this list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Item {
+    /// Symbol and time-frame dropdowns, the screen-reading line: "the symbol / time frame /
+    /// screen-reading line".
+    SymbolPicker,
+    TfPicker,
+    ScreenLine,
+    FeedDot,
+    Mute,
+    /// WAIT, BUY or SELL, with a short reason or "+N more".
+    State,
+    Entry,
+    Target,
+    Stop,
+    Hold,
+    Size,
+    /// "Past results of this rule: ... No edge shown in testing."
+    PastLine,
+    /// The collapsed Details section's toggle.
+    DetailsToggle,
+    /// Demo and screenshot runs only: "REPLAY ...".
+    ReplayLabel,
+}
+
+/// The main view's content.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MainModel {
+    /// "WAIT", "↑ BUY" or "↓ SELL".
+    pub state: String,
+    /// +1 BUY, -1 SELL, 0 WAIT.
+    pub dir: i8,
+    /// WAIT's short reason, or "+N more" for an alert.
+    pub sub: Option<String>,
+    pub rows: Vec<(Row, String, String)>,
+    pub past: Option<String>,
+    /// Changes whenever the hero changes (for the reveal).
+    pub key: String,
+}
+
+impl MainModel {
+    fn wait(reason: impl Into<String>) -> MainModel {
+        let r = reason.into();
+        MainModel {
+            state: copy::WAIT.into(),
+            dir: 0,
+            key: format!("wait:{r}"),
+            sub: Some(r),
+            rows: Vec::new(),
+            past: None,
+        }
+    }
+
+    /// The items this model puts on the main view.
+    pub fn items(&self, replay: bool) -> Vec<Item> {
+        let mut v = vec![
+            Item::SymbolPicker,
+            Item::TfPicker,
+            Item::FeedDot,
+            Item::Mute,
+            Item::ScreenLine,
+            Item::State,
+        ];
+        for (r, _, _) in &self.rows {
+            v.push(match r {
+                Row::Entry => Item::Entry,
+                Row::Target => Item::Target,
+                Row::Stop => Item::Stop,
+                Row::Hold => Item::Hold,
+                Row::Size => Item::Size,
+            });
+        }
+        if self.past.is_some() {
+            v.push(Item::PastLine);
+        }
+        v.push(Item::DetailsToggle);
+        if replay {
+            v.push(Item::ReplayLabel);
+        }
+        v
+    }
+}
+
+/// What decides the main view.
+pub struct MainInput<'a> {
+    pub muted: bool,
+    pub supported: bool,
+    pub symbol: &'a str,
+    pub screen_block: Option<&'a str>,
+    pub mismatch: bool,
+    /// Frozen rules tested on this time frame.
+    pub n_rules: usize,
+    pub status: Option<FeedStatus>,
+    pub has_snapshot: bool,
+    pub stats: Option<&'a StatsBook>,
+    /// The shown alert while it runs, with "+N more".
+    pub active: Option<(&'a Signal, usize)>,
+    pub disagree: bool,
+    pub hold: Hold,
+    /// Account size and risk % when the shown alert arrived (its size never changes).
+    pub account: f64,
+    pub risk_pct: f64,
+    pub offset_s: i64,
+}
+
+/// The main view for a state. Order: anything that hides the panel first, then the alert, then
+/// the quiet states.
+pub fn main_model(i: &MainInput<'_>) -> MainModel {
+    if i.muted {
+        return MainModel::wait(copy::WAIT_MUTED);
+    }
+    if !i.supported {
+        return MainModel::wait(copy::wait_unsupported(i.symbol));
+    }
+    if let Some(b) = i.screen_block {
+        return MainModel::wait(b);
+    }
+    if i.mismatch {
+        return MainModel::wait(copy::WAIT_MISMATCH);
+    }
+    if i.n_rules == 0 {
+        return MainModel::wait(copy::WAIT_NO_RULE);
+    }
+    match i.status {
+        Some(FeedStatus::Stale) => return MainModel::wait(copy::WAIT_STALE),
+        Some(FeedStatus::Disconnected) => return MainModel::wait(copy::WAIT_DISCONNECTED),
+        Some(FeedStatus::Starting) | None => return MainModel::wait(copy::WAIT_LOADING),
+        Some(FeedStatus::Live) => {}
+    }
+    if !i.has_snapshot {
+        return MainModel::wait(copy::WAIT_LOADING);
+    }
+    let Some(book) = i.stats else {
+        return MainModel::wait(copy::WAIT_NO_STATS);
+    };
+    if let Some((s, more)) = i.active
+        && let Some(def) = rules::by_order(s.rule)
+        && let Some(st) = book.get(s.rule, &s.symbol)
+    {
+        let p = signal_copy::panel(s, def, st, more, i.account, i.risk_pct, i.offset_s);
+        return MainModel {
+            state: p.state,
+            dir: s.dir,
+            sub: p.more,
+            rows: p.rows,
+            past: Some(p.past),
+            key: s.id.clone(),
+        };
+    }
+    if i.disagree {
+        return MainModel::wait(copy::WAIT_DISAGREE);
+    }
+    if i.hold != Hold::Open {
+        return MainModel::wait(copy::wait_hold(i.hold));
+    }
+    MainModel::wait(copy::wait_idle(i.n_rules))
+}
 
 /// What the panel shows this frame.
 pub struct View<'a> {
     pub symbol: &'a str,
+    pub tf: Timeframe,
     /// `None` when the symbol is unsupported (no feed runs).
     pub status: Option<FeedStatus>,
     pub shared: &'a Shared,
@@ -25,26 +191,27 @@ pub struct View<'a> {
     pub now_ms: i64,
     pub local_offset_s: i64,
     pub recorder: RecorderInfo,
-    pub compact: bool,
+    pub details: bool,
     pub muted: bool,
     pub click_through: bool,
     pub hotkeys_ok: bool,
-    /// Screen reading: available (watcher running), on, manual override, one status line.
     pub screen_avail: bool,
     pub screen_on: bool,
     pub manual: bool,
     pub screen_line: String,
-    /// The screen shows a symbol or time frame without a feed (replaces the context).
-    pub screen_block: Option<String>,
-    /// Price handshake failed (replaces the context): long and compact wording.
-    pub mismatch: Option<(String, String)>,
-    /// Footer text for the symbol and time frame shown.
-    pub footer: String,
-    /// Program and title of the window in front: only with `CANDLESCOPE_VISION_DEBUG=1`, only
-    /// in the expanded panel, held in memory and never logged.
+    /// Price check text for Details, while the panel is hidden by it.
+    pub mismatch: Option<String>,
     pub debug_front: Option<String>,
-    /// Debug flag only: the latest read failures with the window in front (newest last).
     pub debug_failures: Vec<String>,
+    pub main: MainModel,
+    /// 0..1: the hero fades in when it changes.
+    pub reveal: f32,
+    pub stats: Option<&'a StatsBook>,
+    pub active: Option<(&'a Signal, usize)>,
+    pub journal: &'a Journal,
+    pub paper_since: i64,
+    pub hold: Hold,
+    pub import_msg: &'a [String],
 }
 
 /// Inputs the user edits (kept by the app between frames).
@@ -54,32 +221,29 @@ pub struct Controls {
     pub opacity: f32,
     pub account: String,
     pub risk_pct: String,
-    pub entry: String,
-    pub stop: String,
-    pub funding_n: String,
-    /// Scroll the expanded panel to the risk calculator (set for screenshots with prices).
-    pub focus_risk: bool,
+    pub limits: Limits,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     ToggleMute,
-    ToggleCompact,
+    ToggleDetails,
     SetFeed(String, Timeframe),
     SetClickThrough(bool),
     StartDrag,
     BeginResize,
     ToggleScreen,
     FollowScreen,
+    ResetPaper,
+    ImportFills,
 }
 
 /// Heights measured while drawing (for the layout check).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Layout_ {
     pub header: f32,
-    pub footer: f32,
-    pub body_needed: f32,
-    pub body_avail: f32,
+    pub main_needed: f32,
+    pub window: f32,
 }
 
 fn text(s: impl Into<String>) -> RichText {
@@ -91,13 +255,14 @@ fn dim(s: impl Into<String>) -> RichText {
 }
 
 fn head(ui: &mut Ui, s: &str) {
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     ui.label(
         RichText::new(s)
             .strong()
             .size(pal::FONT_HEAD)
             .color(c(pal::TEXT)),
     );
+    ui.add_space(2.0);
 }
 
 fn status_color(s: FeedStatus) -> Color32 {
@@ -112,6 +277,7 @@ fn wrap(ui: &mut Ui, t: RichText) {
     ui.add(egui::Label::new(t).wrap());
 }
 
+/// Header: navigation dropdowns, feed dot, MUTE; the screen-reading line; the replay label.
 pub fn header(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) {
     // The whole header strip is a drag handle (widgets on top keep their clicks).
     let strip = ui.max_rect();
@@ -120,7 +286,7 @@ pub fn header(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) 
         out.push(Action::StartDrag);
     }
     ui.horizontal(|ui| {
-        ui.label(text("\u{2261}").size(pal::FONT_BIG))
+        ui.label(dim("\u{2261}").size(pal::FONT_BIG))
             .on_hover_text(copy::DRAG_HINT);
         let before = (ctl.symbol.clone(), ctl.tf);
         let mut syms: Vec<String> = cs_live::SUPPORTED_SYMBOLS
@@ -131,21 +297,25 @@ pub fn header(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) 
             syms.push(ctl.symbol.clone());
         }
         ComboBox::from_id_salt("symbol")
-            .width(if v.compact { 104.0 } else { 120.0 })
+            .width(98.0)
             .selected_text(text(ctl.symbol.clone()).strong())
             .show_ui(ui, |ui| {
                 for s in &syms {
                     ui.selectable_value(&mut ctl.symbol, s.clone(), s.as_str());
                 }
-            });
+            })
+            .response
+            .on_hover_text(copy::SYMBOL_TIP);
         ComboBox::from_id_salt("tf")
-            .width(58.0)
+            .width(52.0)
             .selected_text(text(ctl.tf.label()).strong())
             .show_ui(ui, |ui| {
                 for tf in cs_live::SUPPORTED_TFS {
                     ui.selectable_value(&mut ctl.tf, tf, tf.label());
                 }
-            });
+            })
+            .response
+            .on_hover_text(copy::TF_TIP);
         if (ctl.symbol.clone(), ctl.tf) != before {
             out.push(Action::SetFeed(ctl.symbol.clone(), ctl.tf));
         }
@@ -154,45 +324,31 @@ pub fn header(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) 
             let b = Button::new(
                 RichText::new(label)
                     .strong()
-                    .size(pal::FONT_BIG)
+                    .size(pal::FONT_BODY)
                     .color(c(pal::TEXT)),
             )
             .fill(c(pal::BG_RAISED))
-            .stroke(Stroke::new(2.0, c(pal::TEXT_DIM)))
+            .stroke(Stroke::new(1.5, c(pal::TEXT_DIM)))
             .corner_radius(CornerRadius::same(4))
-            .min_size(vec2(84.0, 28.0));
-            if ui.add(b).on_hover_text("Ctrl+Alt+M").clicked() {
+            .min_size(vec2(76.0, 26.0));
+            if ui.add(b).on_hover_text(copy::MUTE_TIP).clicked() {
                 out.push(Action::ToggleMute);
             }
-        });
-    });
-    ui.horizontal(|ui| {
-        match v.status {
-            Some(s) => {
-                ui.label(
-                    RichText::new(copy::status_badge(s))
-                        .strong()
-                        .color(status_color(s)),
-                );
-            }
-            None => {
-                ui.label(
-                    RichText::new("\u{2715} UNSUPPORTED")
-                        .strong()
-                        .color(c(pal::WARN)),
-                );
-            }
-        }
-        ui.label(dim(copy::clock(v.now_ms, v.local_offset_s)));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (glyph, tip) = if v.compact {
-                ("\u{25BE}", copy::MORE)
-            } else {
-                ("\u{25B4}", copy::LESS)
-            };
-            let b = Button::new(text(glyph).size(pal::FONT_BIG)).min_size(vec2(30.0, 22.0));
-            if ui.add(b).on_hover_text(tip).clicked() {
-                out.push(Action::ToggleCompact);
+            match v.status {
+                Some(s) => {
+                    ui.label(
+                        RichText::new(copy::status_badge(s))
+                            .strong()
+                            .color(status_color(s)),
+                    );
+                }
+                None => {
+                    ui.label(
+                        RichText::new("\u{2715} UNSUPPORTED")
+                            .strong()
+                            .color(c(pal::WARN)),
+                    );
+                }
             }
         });
     });
@@ -202,60 +358,93 @@ pub fn header(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) 
         } else {
             (copy::SCREEN_OFF, c(pal::TEXT_DIM))
         };
-        let b = Button::new(RichText::new(label).strong().color(col))
+        let b = Button::new(RichText::new(label).color(col))
             .fill(c(pal::BG_RAISED))
             .stroke(Stroke::new(1.0, col));
-        let r = ui
+        if ui
             .add_enabled(v.screen_avail, b)
-            .on_hover_text(copy::SCREEN_TIP);
-        if r.clicked() {
+            .on_hover_text(copy::SCREEN_TIP)
+            .clicked()
+        {
             out.push(Action::ToggleScreen);
         }
         if v.screen_on && v.manual && ui.button(text(copy::FOLLOW_SCREEN)).clicked() {
             out.push(Action::FollowScreen);
         }
-        if !v.compact || !v.manual {
-            ui.add(egui::Label::new(dim(v.screen_line.clone())).truncate());
-        }
+        ui.add(egui::Label::new(dim(v.screen_line.clone())).truncate());
     });
     if let Some(s) = v.sample {
         ui.label(RichText::new(s).strong().color(c(pal::WARN)));
     }
 }
 
-pub fn footer(ui: &mut Ui, v: &View, out: &mut Vec<Action>) {
-    if let Some(d) = v.shared.drift
-        && d.warn()
-        && v.status.is_some()
-    {
-        wrap(
-            ui,
-            RichText::new(copy::drift_warning(d.offset_ms)).color(c(pal::WARN)),
-        );
-    }
-    wrap(ui, text(v.footer.clone()).size(pal::FONT_MIN));
-    if !v.compact {
-        wrap(ui, dim(copy::HELP_KEYS).size(pal::FONT_MIN));
-        if let Some(d) = &v.debug_front {
-            wrap(
-                ui,
-                RichText::new(copy::front_debug(d))
-                    .size(pal::FONT_MIN)
-                    .color(c(pal::WARN)),
-            );
-            for f in &v.debug_failures {
-                wrap(ui, dim(format!("Debug \u{00B7} {f}")).size(pal::FONT_MIN));
-            }
-        }
-    }
-    let r = v.recorder;
-    let line = if v.compact {
-        copy::recorder_short(r.days, r.last_age_s)
-    } else {
-        copy::recorder(r.days, r.hours, r.last_age_s)
-    };
+/// The main view: the hero state, the alert's rows and its past-results line, the Details
+/// toggle; then Details when open. Returns the height the main view needed.
+pub fn body(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) -> f32 {
+    let top = ui.cursor().top();
+    let m = &v.main;
+    let alpha = v.reveal.clamp(0.0, 1.0);
+    let fade = |col: Color32| col.gamma_multiply(0.25 + 0.75 * alpha);
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        wrap(ui, dim(line).size(pal::FONT_MIN));
+        let col = if m.dir == 0 {
+            c(pal::TEXT_DIM)
+        } else {
+            c(pal::TEXT)
+        };
+        ui.label(
+            RichText::new(&m.state)
+                .strong()
+                .size(pal::FONT_HERO)
+                .color(fade(col)),
+        );
+        if m.dir != 0
+            && let Some(more) = &m.sub
+        {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(dim(more.clone()).size(pal::FONT_BODY));
+            });
+        }
+    });
+    if m.dir == 0
+        && let Some(r) = &m.sub
+    {
+        wrap(ui, RichText::new(r.clone()).color(fade(c(pal::WARN))));
+    }
+    if !m.rows.is_empty() {
+        ui.add_space(4.0);
+        egui::Grid::new("alert")
+            .num_columns(2)
+            .spacing(vec2(12.0, 3.0))
+            .show(ui, |ui| {
+                for (r, label, value) in &m.rows {
+                    ui.label(dim(label.clone()).size(pal::FONT_BODY));
+                    let strong = matches!(r, Row::Entry | Row::Target | Row::Stop);
+                    let t = text(value.clone()).size(pal::FONT_BODY);
+                    ui.add(egui::Label::new(if strong { t.strong() } else { t }).wrap());
+                    ui.end_row();
+                }
+            });
+    }
+    if let Some(p) = &m.past {
+        ui.add_space(4.0);
+        wrap(ui, dim(p.clone()).size(pal::FONT_MIN));
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        // The arrow turns when open and shifts a little on hover.
+        let id = ui.make_persistent_id("details_hover");
+        let hovered = ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+        let arrow = if v.details { "\u{25BE}" } else { "\u{25B8}" };
+        let gap = if hovered { "\u{2002}" } else { " " };
+        let b = Button::new(text(format!("{arrow}{gap}{}", copy::DETAILS)))
+            .fill(c(pal::BG_RAISED))
+            .stroke(Stroke::new(1.0, c(pal::BORDER)));
+        let r = ui.add(b).on_hover_text(copy::DETAILS_TIP);
+        ui.ctx().data_mut(|d| d.insert_temp(id, r.hovered()));
+        if r.clicked() {
+            out.push(Action::ToggleDetails);
+        }
         ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
             let g = ui.add(egui::Label::new(dim("\u{25E2}")).sense(Sense::drag()));
             let g = g.on_hover_text(copy::RESIZE_HINT);
@@ -264,138 +453,26 @@ pub fn footer(ui: &mut Ui, v: &View, out: &mut Vec<Action>) {
             }
         });
     });
-}
-
-/// Body. Returns the height the content needed.
-pub fn body(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) -> f32 {
-    let top = ui.cursor().top();
-    let warn = |t: String| RichText::new(t).strong().color(c(pal::WARN));
-    if v.click_through {
-        let t = if v.compact {
-            copy::CLICK_ON_SHORT
-        } else {
-            copy::CLICK_ON
-        };
-        wrap(ui, warn(t.to_string()));
-    }
-    if v.muted {
-        if v.compact {
-            wrap(ui, text(copy::MUTED_SHORT).strong());
-        } else {
-            wrap(ui, text(copy::MUTED_BODY).strong().size(pal::FONT_HEAD));
-            if let Some(s) = v.status {
-                wrap(ui, dim(format!("Feed: {}", s.label())));
-            }
-            wrap(ui, dim(copy::MUTED_HOW));
-        }
-        return ui.cursor().top() - top;
-    }
-    if let Some(b) = &v.screen_block {
-        wrap(ui, warn(b.clone()));
-        return ui.cursor().top() - top;
-    }
-    if let Some((long, short)) = &v.mismatch {
-        let t = if v.compact { short } else { long };
-        wrap(ui, RichText::new(t.clone()).strong().color(c(pal::ALERT)));
-        return ui.cursor().top() - top;
-    }
-    let Some(status) = v.status else {
-        wrap(ui, warn(copy::unsupported(v.symbol)));
-        return ui.cursor().top() - top;
-    };
-    let sh = v.shared;
-    let Some(s) = sh.snapshot.as_ref() else {
-        if v.compact {
-            wrap(ui, warn(copy::no_data_short(&sh.note)));
-        } else {
-            wrap(ui, warn(copy::no_data(&sh.note, sh.warmup_candles)));
-            wrap(
-                ui,
-                dim("The panel shows context once the warm-up candles have loaded."),
-            );
-        }
-        return ui.cursor().top() - top;
-    };
-    let asof = copy::md_hm(s.close_at);
-    let age = sh.last_msg.map(|t| t.elapsed().as_secs());
-    let banner = match (status, v.compact) {
-        (FeedStatus::Stale, false) => Some(warn(copy::stale_banner(age, &asof))),
-        (FeedStatus::Stale, true) => Some(warn(copy::stale_short(age, &asof))),
-        (FeedStatus::Disconnected, false) => Some(
-            RichText::new(copy::disconnected_banner(&sh.note, &asof))
-                .strong()
-                .color(c(pal::ALERT)),
-        ),
-        (FeedStatus::Disconnected, true) => Some(
-            RichText::new(copy::disconnected_short(&asof))
-                .strong()
-                .color(c(pal::ALERT)),
-        ),
-        _ => None,
-    };
-    let has_banner = banner.is_some();
-    if let Some(b) = banner {
-        wrap(ui, b);
-    }
-    if v.compact {
-        // With a banner (or the click-through notice) the zone line gives way, so the panel
-        // keeps its size.
-        compact(ui, s, !has_banner && !v.click_through);
-    } else {
+    let needed = ui.cursor().top() - top;
+    if v.details {
+        ui.separator();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                expanded(ui, v, s, ctl, out);
-            });
+            .show(ui, |ui| details(ui, v, ctl, out));
     }
-    ui.cursor().top() - top
+    needed
 }
 
-fn compact(ui: &mut Ui, s: &ContextSnapshot, zones: bool) {
-    wrap(
-        ui,
-        text(format!(
-            "{} \u{00B7} {}",
-            copy::htf_compact(&s.htf[0]),
-            copy::htf_compact(&s.htf[1])
-        )),
-    );
-    wrap(
-        ui,
-        text(format!(
-            "{} \u{00B7} {} \u{00B7} {}",
-            copy::regime(s.regime, s.adx),
-            copy::vol_short(s.vol_pct),
-            copy::session_short(s.session)
-        )),
-    );
-    if !zones {
-        return;
-    }
-    let mut z: Vec<String> = Vec::new();
-    for x in [s.sr_inside, s.sr_below, s.sr_above].into_iter().flatten() {
-        z.push(copy::zone_compact(&x));
-    }
-    let zl = if z.is_empty() {
-        "No S/R zone tracked".to_string()
-    } else {
-        format!("Nearest {}", z.join(" \u{00B7} "))
-    };
-    wrap(ui, text(zl));
-}
-
-fn expanded(ui: &mut Ui, v: &View, s: &ContextSnapshot, ctl: &mut Controls, out: &mut Vec<Action>) {
+fn context(ui: &mut Ui, s: &ContextSnapshot) {
     wrap(ui, dim(copy::as_of(s.close_at)));
     head(ui, copy::H_TREND);
     for h in &s.htf {
         wrap(ui, text(copy::htf(h)));
     }
     wrap(ui, text(copy::regime(s.regime, s.adx)));
-
     head(ui, copy::H_VOL);
     wrap(ui, text(copy::vol(s.vol_pct)));
     wrap(ui, text(copy::session(s.session)));
-
     head(ui, copy::H_ZONES);
     if let Some(z) = s.sr_inside {
         wrap(ui, text(copy::zone("S/R (price inside)", &z)));
@@ -408,12 +485,10 @@ fn expanded(ui: &mut Ui, v: &View, s: &ContextSnapshot, ctl: &mut Controls, out:
     wrap(ui, text(zl(s.sr_below, "S/R below")));
     wrap(ui, text(zl(s.supply, "Supply")));
     wrap(ui, text(zl(s.demand, "Demand")));
-
     head(ui, copy::H_EVENTS);
     wrap(ui, text(copy::marker("Sweep", s.sweep.as_ref(), s.idx)));
     wrap(ui, text(copy::marker("BOS", s.bos.as_ref(), s.idx)));
     wrap(ui, text(copy::marker("CHoCH", s.choch.as_ref(), s.idx)));
-
     head(ui, copy::H_PULLBACK);
     match s.current_pullback() {
         Some(p) => wrap(
@@ -428,14 +503,154 @@ fn expanded(ui: &mut Ui, v: &View, s: &ContextSnapshot, ctl: &mut Controls, out:
         None => wrap(ui, text(copy::pullback_none(s.pullback_age()))),
     }
     wrap(ui, dim(copy::PULLBACK_NOTE).size(pal::FONT_MIN));
+}
 
-    if ctl.focus_risk {
-        ui.scroll_to_cursor(Some(Align::TOP));
+fn rule_numbers(ui: &mut Ui, def: &RuleDef, st: &RuleStats, s: &Signal) {
+    wrap(ui, text(copy::rule_title(def)).strong());
+    wrap(ui, dim(def.describe()));
+    for (n, p) in [
+        ("Months 1-18", &st.all),
+        ("Discovery (picked here)", &st.discovery),
+        ("Validation (after picking)", &st.validation),
+    ] {
+        wrap(ui, text(copy::period_line(n, def, p)));
     }
-    head(ui, copy::H_RISK);
-    risk_panel(ui, v, s, ctl);
+    let c1 = sizing::cost_r(
+        cs_backtest::cost::CostModel::BINANCE_UM,
+        s.dir,
+        s.entry,
+        s.stop,
+        s.atr,
+    );
+    let c2 = sizing::cost_r(
+        cs_backtest::cost::CostModel::BINANCE_UM.with_mult(2.0),
+        s.dir,
+        s.entry,
+        s.stop,
+        s.atr,
+    );
+    wrap(ui, text(copy::cost_line(c1, c2)));
+    wrap(ui, dim(copy::PAST_NOTE).size(pal::FONT_MIN));
+}
 
-    head(ui, copy::H_SETTINGS);
+fn field(ui: &mut Ui, label: &str, val: &mut String, max: f64) {
+    ui.label(text(label));
+    let ok = crate::settings::parse_number(val).is_some_and(|x| x > 0.0 && x <= max);
+    let r = ui.add(
+        TextEdit::singleline(val)
+            .desired_width(96.0)
+            .font(egui::TextStyle::Body),
+    );
+    if !ok {
+        r.on_hover_text(copy::SET_BAD_NUMBER);
+    }
+    ui.end_row();
+}
+
+fn details(ui: &mut Ui, v: &View, ctl: &mut Controls, out: &mut Vec<Action>) {
+    // The alert's rule, or every rule of this time frame.
+    if let Some((s, _)) = v.active
+        && let Some(def) = rules::by_order(s.rule)
+        && let Some(st) = v.stats.and_then(|b| b.get(s.rule, &s.symbol))
+    {
+        head(ui, copy::H_RULE);
+        rule_numbers(ui, def, st, s);
+    } else {
+        head(ui, copy::H_RULES);
+        let rs = rules::rules_for(v.tf);
+        if rs.is_empty() {
+            wrap(ui, text(copy::WAIT_NO_RULE));
+        }
+        for def in rs {
+            let st = v.stats.and_then(|b| b.get(def.order, v.symbol));
+            wrap(ui, text(copy::rule_row(def, st)));
+        }
+    }
+
+    head(ui, copy::H_PAPER);
+    let account = crate::settings::parse_number(&ctl.account).unwrap_or(f64::NAN);
+    let paper = journal::paper(&v.journal.rows, account, v.paper_since);
+    wrap(ui, text(copy::paper_line(&paper)));
+    let today = journal::today(&v.journal.rows, v.now_ms);
+    wrap(ui, text(copy::today_line(&today, &ctl.limits)));
+    if v.hold != Hold::Open {
+        wrap(
+            ui,
+            RichText::new(copy::wait_hold(v.hold)).color(c(pal::WARN)),
+        );
+    }
+    egui::Grid::new("settings")
+        .num_columns(2)
+        .spacing(vec2(10.0, 5.0))
+        .show(ui, |ui| {
+            field(ui, copy::SET_ACCOUNT, &mut ctl.account, 1e12);
+            field(ui, copy::SET_RISK, &mut ctl.risk_pct, 100.0);
+            ui.label(text(copy::SET_MAX_DAY));
+            ui.add(egui::DragValue::new(&mut ctl.limits.max_per_day).range(1..=50));
+            ui.end_row();
+            ui.label(text(copy::SET_PAUSE_LOSSES));
+            ui.add(egui::DragValue::new(&mut ctl.limits.pause_after_losses).range(1..=50));
+            ui.end_row();
+            ui.label(text(copy::SET_DAILY_LOSS));
+            ui.add(
+                egui::DragValue::new(&mut ctl.limits.daily_loss_r)
+                    .range(0.5..=100.0)
+                    .speed(0.1)
+                    .max_decimals(1),
+            );
+            ui.end_row();
+        });
+    if ui.button(text(copy::SET_RESET_PAPER)).clicked() {
+        out.push(Action::ResetPaper);
+    }
+    wrap(ui, dim(copy::PAPER_NOTE).size(pal::FONT_MIN));
+
+    head(ui, copy::H_CAL);
+    let (n, rows) = journal::calibration(&v.journal.rows);
+    for l in copy::calibration_lines(n, &rows) {
+        wrap(ui, text(l));
+    }
+
+    head(ui, copy::H_FILLS);
+    wrap(ui, dim(copy::FILLS_HOW).size(pal::FONT_MIN));
+    if ui.button(text(copy::FILLS_IMPORT)).clicked() {
+        out.push(Action::ImportFills);
+    }
+    for l in v.import_msg {
+        wrap(ui, text(l.clone()));
+    }
+
+    if let Some(s) = v.shared.snapshot.as_ref() {
+        context(ui, s);
+    } else {
+        head(ui, copy::H_TREND);
+        wrap(ui, dim(copy::WAIT_LOADING));
+    }
+
+    head(ui, copy::H_WINDOW);
+    wrap(ui, dim(copy::clock(v.now_ms, v.local_offset_s)));
+    wrap(ui, dim(copy::times_note(v.local_offset_s)));
+    if let Some(s) = v.status {
+        wrap(
+            ui,
+            dim(copy::feed_line(
+                s,
+                v.shared.reconnects,
+                v.shared.warmup_candles,
+            )),
+        );
+    }
+    if let Some(d) = v.shared.drift
+        && d.warn()
+    {
+        wrap(
+            ui,
+            RichText::new(copy::drift_warning(d.offset_ms)).color(c(pal::WARN)),
+        );
+    }
+    if let Some(m) = &v.mismatch {
+        wrap(ui, RichText::new(m.clone()).color(c(pal::ALERT)));
+    }
     ui.horizontal(|ui| {
         ui.label(text(copy::SET_OPACITY));
         ui.add(
@@ -447,141 +662,240 @@ fn expanded(ui: &mut Ui, v: &View, s: &ContextSnapshot, ctl: &mut Controls, out:
     if ui.checkbox(&mut ct, text(copy::SET_CLICK)).changed() {
         out.push(Action::SetClickThrough(ct));
     }
+    if v.click_through {
+        wrap(ui, RichText::new(copy::CLICK_ON).color(c(pal::WARN)));
+    }
+    wrap(ui, dim(copy::HELP_KEYS).size(pal::FONT_MIN));
     if !v.hotkeys_ok {
+        wrap(ui, RichText::new(copy::HOTKEYS_TAKEN).color(c(pal::WARN)));
+    }
+    let r = v.recorder;
+    wrap(
+        ui,
+        dim(copy::recorder(r.days, r.hours, r.last_age_s)).size(pal::FONT_MIN),
+    );
+    if let Some(d) = &v.debug_front {
         wrap(
             ui,
-            RichText::new("Some hotkeys could not be registered (another program uses them).")
+            RichText::new(copy::front_debug(d))
+                .size(pal::FONT_MIN)
                 .color(c(pal::WARN)),
         );
-    }
-}
-
-fn field(ui: &mut Ui, label: &str, val: &mut String) {
-    ui.label(text(label));
-    ui.add(
-        TextEdit::singleline(val)
-            .desired_width(110.0)
-            .font(egui::TextStyle::Body),
-    );
-    ui.end_row();
-}
-
-fn risk_panel(ui: &mut Ui, v: &View, s: &ContextSnapshot, ctl: &mut Controls) {
-    egui::Grid::new("risk")
-        .num_columns(2)
-        .spacing(vec2(10.0, 6.0))
-        .show(ui, |ui| {
-            field(ui, copy::RISK_ACCOUNT, &mut ctl.account);
-            field(ui, copy::RISK_PCT, &mut ctl.risk_pct);
-            field(ui, copy::RISK_ENTRY, &mut ctl.entry);
-            field(ui, copy::RISK_STOP, &mut ctl.stop);
-            field(ui, copy::RISK_FUNDING, &mut ctl.funding_n);
-        });
-    let base = v.symbol.trim_end_matches("USDT");
-    if ctl.entry.trim().is_empty() || ctl.stop.trim().is_empty() {
-        wrap(ui, dim(copy::RISK_NEED));
-    } else {
-        let rate = v.shared.mark.map_or(f64::NAN, |m| m.funding_rate);
-        let inp = risk::RiskIn {
-            account: risk::parse(&ctl.account).unwrap_or(f64::NAN),
-            risk_pct: risk::parse(&ctl.risk_pct).unwrap_or(f64::NAN),
-            entry: risk::parse(&ctl.entry).unwrap_or(f64::NAN),
-            stop: risk::parse(&ctl.stop).unwrap_or(f64::NAN),
-            atr: s.atr,
-            funding_rate: rate,
-            funding_n: risk::parse(&ctl.funding_n).unwrap_or(0.0),
-            cost: cs_backtest::cost::CostModel::BINANCE_UM,
-        };
-        match risk::calc(&inp) {
-            None => wrap(ui, RichText::new(copy::RISK_BAD).color(c(pal::WARN))),
-            Some(r) => {
-                let side = if r.side > 0 {
-                    "Stop below entry: this loses if price falls to the stop."
-                } else {
-                    "Stop above entry: this loses if price rises to the stop."
-                };
-                wrap(ui, dim(side));
-                wrap(
-                    ui,
-                    text(format!(
-                        "Position size: {:.4} {base} (notional {} USDT, {:.1}x)",
-                        r.qty,
-                        copy::price(r.notional),
-                        r.leverage
-                    ))
-                    .strong(),
-                );
-                if r.capped {
-                    wrap(
-                        ui,
-                        RichText::new(format!(
-                            "Capped at {:.0}x leverage: the size is smaller, so the stop risks {:.2} % instead of {} %.",
-                            risk::MAX_LEVERAGE,
-                            r.risk_frac * 100.0,
-                            ctl.risk_pct.trim()
-                        ))
-                        .color(c(pal::WARN)),
-                    );
-                }
-                let d = r.dist;
-                wrap(
-                    ui,
-                    text(format!(
-                        "Round-trip cost at this stop: {:.2} R ({:.2} USDT): fees {:.2} R, spread {:.2} R, slippage {:.2} R, funding {:.2} R",
-                        r.cost_r,
-                        r.cost_cash,
-                        r.fee / d,
-                        r.spread / d,
-                        r.slip / d,
-                        r.funding / d
-                    ))
-                    .strong(),
-                );
-                wrap(
-                    ui,
-                    dim(format!(
-                        "A stop-out would lose about {:.2} R ({:.2} % of the account) after these costs.",
-                        1.0 + r.cost_r,
-                        (1.0 + r.cost_r) * r.risk_frac * 100.0
-                    )),
-                );
-                if r.warn {
-                    Frame::new()
-                        .fill(c(pal::BG_RAISED))
-                        .stroke(Stroke::new(2.0, c(pal::WARN)))
-                        .inner_margin(Margin::same(6))
-                        .show(ui, |ui| {
-                            wrap(
-                                ui,
-                                RichText::new(format!(
-                                    "\u{26A0} WARNING: cost is {:.2} R, above {:.1} R. The stop is tight compared with fees, spread and slippage.",
-                                    r.cost_r,
-                                    risk::WARN_COST_R
-                                ))
-                                .strong()
-                                .color(c(pal::WARN)),
-                            );
-                        });
-                }
-                if r.funding_credit {
-                    wrap(
-                        ui,
-                        dim(
-                            "Funding at the current rate would be received; it is not counted as a saving.",
-                        ),
-                    );
-                }
-                let fr = if rate.is_finite() {
-                    format!(
-                        "Funding rate now: {:.4} % per settlement (8 h).",
-                        rate * 100.0
-                    )
-                } else {
-                    "Funding rate not received yet: funding counted as 0.".to_string()
-                };
-                wrap(ui, dim(fr));
-            }
+        for f in &v.debug_failures {
+            wrap(ui, dim(format!("Debug \u{00B7} {f}")).size(pal::FONT_MIN));
         }
     }
-    wrap(ui, dim(copy::RISK_NOTE).size(pal::FONT_MIN));
+    head(ui, copy::H_GATE);
+    wrap(ui, dim(copy::gate_note(v.symbol, v.tf)).size(pal::FONT_MIN));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn book() -> StatsBook {
+        StatsBook::parse(include_str!("../../../reports/rule-stats.json")).unwrap()
+    }
+
+    fn input<'a>(b: &'a StatsBook, active: Option<(&'a Signal, usize)>) -> MainInput<'a> {
+        MainInput {
+            muted: false,
+            supported: true,
+            symbol: "BTCUSDT",
+            screen_block: None,
+            mismatch: false,
+            n_rules: 8,
+            status: Some(FeedStatus::Live),
+            has_snapshot: true,
+            stats: Some(b),
+            active,
+            disagree: false,
+            hold: Hold::Open,
+            account: 10_000.0,
+            risk_pct: 1.0,
+            offset_s: 19_800,
+        }
+    }
+
+    /// Everything the main view may hold, as the user listed it.
+    fn allowed() -> BTreeSet<Item> {
+        [
+            Item::SymbolPicker,
+            Item::TfPicker,
+            Item::ScreenLine,
+            Item::FeedDot,
+            Item::Mute,
+            Item::State,
+            Item::Entry,
+            Item::Target,
+            Item::Stop,
+            Item::Hold,
+            Item::Size,
+            Item::PastLine,
+            Item::DetailsToggle,
+            Item::ReplayLabel,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// Every state: the main view holds only the listed items; WAIT holds no alert rows and
+    /// no past-results line; BUY and SELL hold exactly Entry, Target, Stop, Hold, Size and the
+    /// past-results line, in that order.
+    #[test]
+    fn main_view_contains_only_the_listed_items() {
+        let b = book();
+        let up = crate::board::tests_alert(1, 1, "BTCUSDT", rules::Exit::Trail);
+        let down = crate::board::tests_alert(4, -1, "BTCUSDT", rules::Exit::R(1.0));
+        let mut models = Vec::new();
+        let base = input(&b, None);
+        models.push(main_model(&base));
+        models.push(main_model(&MainInput {
+            muted: true,
+            active: Some((&up, 0)),
+            ..input(&b, None)
+        }));
+        models.push(main_model(&MainInput {
+            supported: false,
+            ..input(&b, None)
+        }));
+        models.push(main_model(&MainInput {
+            screen_block: Some("Unsupported time frame: D (one day); 5m, 15m and 1h only"),
+            ..input(&b, None)
+        }));
+        models.push(main_model(&MainInput {
+            mismatch: true,
+            active: Some((&up, 0)),
+            ..input(&b, None)
+        }));
+        models.push(main_model(&MainInput {
+            n_rules: 0,
+            ..input(&b, None)
+        }));
+        for st in [
+            FeedStatus::Stale,
+            FeedStatus::Disconnected,
+            FeedStatus::Starting,
+        ] {
+            models.push(main_model(&MainInput {
+                status: Some(st),
+                active: Some((&up, 0)),
+                ..input(&b, None)
+            }));
+        }
+        models.push(main_model(&MainInput {
+            stats: None,
+            ..input(&b, None)
+        }));
+        models.push(main_model(&MainInput {
+            disagree: true,
+            ..input(&b, None)
+        }));
+        models.push(main_model(&MainInput {
+            hold: Hold::Losses(3),
+            ..input(&b, None)
+        }));
+        let buy = main_model(&input(&b, Some((&up, 2))));
+        let sell = main_model(&input(&b, Some((&down, 0))));
+        let allowed = allowed();
+        for m in &models {
+            assert_eq!(m.state, "WAIT", "{m:?}");
+            assert!(m.sub.is_some(), "WAIT always has a short reason: {m:?}");
+            let items = m.items(false);
+            assert!(items.iter().all(|i| allowed.contains(i)));
+            for i in [
+                Item::Entry,
+                Item::Target,
+                Item::Stop,
+                Item::Hold,
+                Item::Size,
+                Item::PastLine,
+            ] {
+                assert!(!items.contains(&i), "{i:?} in WAIT: {m:?}");
+            }
+        }
+        for (m, word) in [(&buy, "BUY"), (&sell, "SELL")] {
+            assert!(
+                m.state.contains(word)
+                    && (m.state.contains('\u{2191}') || m.state.contains('\u{2193}'))
+            );
+            let items = m.items(true);
+            assert!(items.iter().all(|i| allowed.contains(i)));
+            assert_eq!(
+                items,
+                [
+                    Item::SymbolPicker,
+                    Item::TfPicker,
+                    Item::FeedDot,
+                    Item::Mute,
+                    Item::ScreenLine,
+                    Item::State,
+                    Item::Entry,
+                    Item::Target,
+                    Item::Stop,
+                    Item::Hold,
+                    Item::Size,
+                    Item::PastLine,
+                    Item::DetailsToggle,
+                    Item::ReplayLabel
+                ]
+            );
+            assert!(
+                m.past
+                    .as_ref()
+                    .unwrap()
+                    .ends_with("No edge shown in testing.")
+            );
+        }
+        assert_eq!(buy.sub.as_deref(), Some("+2 more"));
+        // Muting, a stale feed and a price mismatch hide an active alert.
+        assert_eq!(models[1].sub.as_deref(), Some(copy::WAIT_MUTED));
+        assert_eq!(models[4].sub.as_deref(), Some(copy::WAIT_MISMATCH));
+        assert_eq!(
+            models[5].sub.as_deref(),
+            Some("no tested rule for this time frame")
+        );
+        assert_eq!(models[10].sub.as_deref(), Some("rules disagree"));
+        assert_eq!(
+            models[11].sub.as_deref(),
+            Some("paused: 3 losses in a row today")
+        );
+    }
+
+    /// The main line flags "low evidence" below 100 trades (with the real file every rule has
+    /// at least 110 in months 1-18, so this uses its validation numbers).
+    #[test]
+    fn low_evidence_on_the_main_line() {
+        let b = book();
+        let mut low = b.clone();
+        for r in &mut low.rows {
+            r.2.all = r.2.validation;
+        }
+        let up = crate::board::tests_alert(1, 1, "BTCUSDT", rules::Exit::Trail);
+        let m = main_model(&input(&low, Some((&up, 0))));
+        let p = m.past.unwrap();
+        assert!(p.contains("(n=83, low evidence)"), "{p}");
+        let m = main_model(&input(&b, Some((&up, 0))));
+        assert!(!m.past.unwrap().contains("low evidence"));
+    }
+
+    /// Size on the main view = the hand calculation (10,000 USDT, 1 %, entry 90,000, stop 89,100
+    /// -> 100 USDT / 900 = 0.1111 BTC, 10,000 USDT notional).
+    #[test]
+    fn size_row_matches_hand_calculation() {
+        let b = book();
+        let up = crate::board::tests_alert(1, 1, "BTCUSDT", rules::Exit::Trail);
+        let m = main_model(&input(&b, Some((&up, 0))));
+        let size = m.rows.iter().find(|r| r.0 == Row::Size).unwrap();
+        assert_eq!(size.2, "0.1111 BTC (10,000.0 USDT)");
+        let m = main_model(&MainInput {
+            account: 25_000.0,
+            risk_pct: 0.5,
+            ..input(&b, Some((&up, 0)))
+        });
+        let size = m.rows.iter().find(|r| r.0 == Row::Size).unwrap();
+        // 125 USDT / 900 = 0.138889 BTC.
+        assert_eq!(size.2, "0.1389 BTC (12,500.0 USDT)");
+    }
 }
