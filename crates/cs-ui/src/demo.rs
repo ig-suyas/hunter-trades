@@ -33,8 +33,7 @@ pub enum DemoState {
     Disagree,
     /// 5m: no frozen rule was tested there.
     NoRule,
-    /// The "up" alert with each rule's validation-period numbers, to show the low-evidence flag
-    /// (every rule has at least 110 trades over months 1-18, so the real line never shows it).
+    /// Replay: the first shown alert whose rule has fewer than 100 validation trades.
     LowEvidence,
     /// Replay with outcomes resolved by the backtest rules until a daily limit holds.
     Guardrail,
@@ -309,17 +308,14 @@ pub fn build(root: &Path, st: DemoState, book: Option<&StatsBook>) -> DemoOut {
             replayed(r, "", None)
         }
         DemoState::LowEvidence => {
-            let Some(b) = book else {
-                return empty("REPLAY: past-results file missing".into());
-            };
-            let mut low = b.clone();
-            for r in &mut low.rows {
-                r.2.all = r.2.validation;
-            }
-            let r = replay_until(root, Some(&low), false, &|b, sh, _, _| {
-                b.active(sh).is_some_and(|(s, _)| s.dir > 0)
+            // The first shown alert whose rule has fewer than 100 validation trades.
+            let r = replay_until(root, book, false, &|b, sh, _, _| {
+                b.active(sh).is_some_and(|(s, _)| {
+                    book.and_then(|k| k.get(s.rule, &s.symbol))
+                        .is_some_and(|st| st.validation.low_evidence())
+                })
             });
-            replayed(r, " \u{00B7} validation numbers", Some(low))
+            replayed(r, "", None)
         }
         DemoState::Guardrail => {
             let limits = Limits::default();

@@ -101,7 +101,7 @@ impl Board {
                 let hist = a
                     .stats
                     .and_then(|b| b.get(s.rule, &s.symbol))
-                    .map(|r| r.all);
+                    .map(|r| r.validation);
                 rows.push(LogRow::from_signal(
                     s,
                     &RowCtx {

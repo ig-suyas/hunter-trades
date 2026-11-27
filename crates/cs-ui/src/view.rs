@@ -509,9 +509,15 @@ fn rule_numbers(ui: &mut Ui, def: &RuleDef, st: &RuleStats, s: &Signal) {
     wrap(ui, text(copy::rule_title(def)).strong());
     wrap(ui, dim(def.describe()));
     for (n, p) in [
-        ("Months 1-18", &st.all),
-        ("Discovery (picked here)", &st.discovery),
-        ("Validation (after picking)", &st.validation),
+        (
+            "Validation (out of sample, after picking; the main line)",
+            &st.validation,
+        ),
+        (
+            "Months 1-18 (in-sample: includes the year it was picked on)",
+            &st.all,
+        ),
+        ("Discovery (in-sample: picked here)", &st.discovery),
     ] {
         wrap(ui, text(copy::period_line(n, def, p)));
     }
@@ -868,16 +874,57 @@ mod tests {
     #[test]
     fn low_evidence_on_the_main_line() {
         let b = book();
-        let mut low = b.clone();
-        for r in &mut low.rows {
-            r.2.all = r.2.validation;
-        }
+        // Rule 1 on BTC: 83 validation trades -> low evidence.
         let up = crate::board::tests_alert(1, 1, "BTCUSDT", rules::Exit::Trail);
-        let m = main_model(&input(&low, Some((&up, 0))));
-        let p = m.past.unwrap();
+        let p = main_model(&input(&b, Some((&up, 0)))).past.unwrap();
         assert!(p.contains("(n=83, low evidence)"), "{p}");
-        let m = main_model(&input(&b, Some((&up, 0))));
-        assert!(!m.past.unwrap().contains("low evidence"));
+        // Rule 7 on BTC: 108 validation trades -> no flag.
+        let r7 = crate::board::tests_alert(7, 1, "BTCUSDT", rules::Exit::Trail);
+        let p = main_model(&input(&b, Some((&r7, 0)))).past.unwrap();
+        assert!(p.contains("(n=108)") && !p.contains("low evidence"), "{p}");
+    }
+
+    /// The main line equals the VALIDATION row of `reports/rule-stats.json` for every rule and
+    /// symbol (n, hit rate or "ended above 0 R", expected R at 1x, low evidence below 100), and
+    /// never the pooled or discovery numbers.
+    #[test]
+    fn main_line_equals_the_validation_row_for_every_rule() {
+        let b = book();
+        let mut n = 0;
+        for def in &rules::RULES {
+            for sym in ["BTCUSDT", "ETHUSDT"] {
+                let st = b.get(def.order, sym).unwrap();
+                let v = &st.validation;
+                let s = crate::board::tests_alert(def.order, 1, sym, def.exit);
+                let p = main_model(&MainInput {
+                    symbol: sym,
+                    ..input(&b, Some((&s, 0)))
+                })
+                .past
+                .unwrap();
+                let rate = if matches!(def.exit, rules::Exit::Trail) {
+                    "ended above 0 R"
+                } else {
+                    "hit rate"
+                };
+                let low = if v.n < 100 { ", low evidence" } else { "" };
+                let want = format!(
+                    "Past results of this rule: {rate} {:.0}% (n={}{low}), expected R after costs {:+.2}. No edge shown in testing.",
+                    v.hit_rate * 100.0,
+                    v.n,
+                    v.exp_1x
+                );
+                assert_eq!(p, want, "rule {} {sym}", def.order);
+                // Not the in-sample numbers.
+                assert!(
+                    !p.contains(&format!("(n={}", st.all.n)),
+                    "rule {} {sym}",
+                    def.order
+                );
+                n += 1;
+            }
+        }
+        assert_eq!(n, 20);
     }
 
     /// Size on the main view = the hand calculation (10,000 USDT, 1 %, entry 90,000, stop 89,100

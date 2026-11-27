@@ -1,7 +1,7 @@
 {
   "about": "Past results of the 10 frozen exploratory rules (all failed the GATE). Discovery and validation periods only; the sealed holdout was not loaded. In-sample, historical; never a forecast.",
   "costs": "Phase 3 cost model (taker 5 bps per fill, spread 1 bp, slippage 1 bp + 0.02 ATR per market fill, historical funding); 2x doubles fee, spread and slippage",
-  "created_utc": "2026-11-27 15:08:22",
+  "created_utc": "2026-11-27 17:04:01",
   "hit_rate_definition": "target: exit at the target; in_profit: net R after costs > 0 (trailing rules have no target)",
   "holdout": "not loaded (research sealed access, data end = seal boundary)",
   "intervals": "hit rate: 80 % Beta-Binomial credible interval, uniform prior; expected R: 80 % circular block bootstrap, 2000 resamples, seed 1",

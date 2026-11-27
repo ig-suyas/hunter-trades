@@ -277,7 +277,7 @@ pub const SET_BAD_NUMBER: &str = "Enter a positive number (risk % at most 100)."
 pub const FILLS_HOW: &str = "One row per shown alert is added to data/signals/fills.csv. Fill in its four empty columns from your demo account (fill prices, size, fees), then press Import, or drop the file on this panel.";
 pub const FILLS_IMPORT: &str = "Import demo fills";
 pub const PAPER_NOTE: &str = "Paper account: every shown alert at your risk %, results from the backtest rules (1-minute candles and funding from the exchange). Limits reset at 00:00 UTC.";
-pub const PAST_NOTE: &str = "Historical and in-sample (discovery and validation periods; the sealed holdout was never used). The rules were picked on the discovery year, so those numbers flatter them; validation is what came after.";
+pub const PAST_NOTE: &str = "The main line shows the validation period: out of sample, after the rules were picked. Months 1-18 and discovery are in-sample: the rules were picked on the discovery year, so those numbers flatter them. Historical numbers only; the sealed holdout was never used.";
 
 /// Under the pullback line: the flag is a description, not an advantage.
 pub const PULLBACK_NOTE: &str = "\"Healthy\" = smaller and slower than the move before it. None of the 60 healthy-pullback variants passed testing.";
@@ -638,17 +638,22 @@ pub fn cost_line(c1: f64, c2: f64) -> String {
     }
 }
 
-/// One line per rule of the time frame (Details, when no alert is shown).
+/// One line per rule of the time frame (Details, when no alert is shown): validation numbers.
 pub fn rule_row(def: &RuleDef, st: Option<&RuleStats>) -> String {
     match st {
         Some(s) => format!(
-            "{} \u{00B7} {} \u{00B7} {} {:.0} % (n={}), {} R",
+            "{} \u{00B7} {} \u{00B7} validation: {} {:.0} % (n={}{}), {} R",
             def.order,
             def.label,
             rate_word(def),
-            s.all.hit_rate * 100.0,
-            s.all.n,
-            rr(s.all.exp_1x)
+            s.validation.hit_rate * 100.0,
+            s.validation.n,
+            if s.validation.low_evidence() {
+                ", low evidence"
+            } else {
+                ""
+            },
+            rr(s.validation.exp_1x)
         ),
         None => format!(
             "{} \u{00B7} {} \u{00B7} no past results",

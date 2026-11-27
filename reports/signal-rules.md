@@ -64,7 +64,7 @@ beyond the other side of the pattern), exactly as in the research.
 The rules were picked on BTCUSDT and checked on ETHUSDT (months 1-18) in the validation stage;
 the overlay runs them on both symbols and shows each symbol's own past results.
 
-## Past results shown (months 1-18 = discovery + validation; holdout never read)
+## Past results shown (validation on the main line; holdout never read)
 
 `candlescope rule-stats` writes `reports/rule-stats.json` (read by the overlay and the journal)
 and `reports/rule-stats.md` (all periods, all intervals). It loads data with the research's sealed
@@ -72,29 +72,54 @@ access up to the seal boundary (2026-05-27 00:00 UTC), so the sealed holdout is 
 and no `reports/holdout.lock` exists. Per rule and symbol: trades n, hit rate with an 80 %
 Beta-Binomial credible interval (uniform prior), expected net R at 1x and 2x costs with 80 %
 circular block-bootstrap intervals, mean cost in R, median and 75th percentile time in trade;
-for months 1-18, discovery and validation separately. "Low evidence" below 100 trades.
+for validation, months 1-18 and discovery separately. "Low evidence" below 100 trades.
 
-Summary (trades / hit rate / net R 1x / net R 2x; BTC validation = trades / net R 1x):
+**The overlay's main line shows the VALIDATION period only** (2025-11-01 .. 2026-05-27: out of
+sample, after the rules were picked on the BTC discovery year), for the symbol on screen. The
+months 1-18 and discovery numbers are in-sample and appear only in Details, below the validation
+row and labelled as in-sample. The paper journal's "past rate" (calibration) also uses the
+validation numbers. A test (`main_line_equals_the_validation_row_for_every_rule`) checks the
+main line against the validation row for all 10 rules on both symbols.
 
-| # | label | BTC months 1-18 | BTC validation | ETH months 1-18 |
-|---|---|---|---|---|
-| 1 | fib_touch native 1h b025-trail F09 | 233 / 37.3 % / +0.269 / +0.010 | 83 / -0.214 | 223 / 28.7 % / +0.191 / -0.006 |
-| 2 | fib_leg native 1h b025-trail F09 | 222 / 36.0 % / +0.178 / -0.040 | 79 / -0.321 | 209 / 29.2 % / +0.128 / -0.039 |
-| 3 | ema_cross native 15m b100-t3 F07 | 190 / 26.8 % / -0.060 / -0.196 | 84 / -0.417 | 212 / 27.8 % / +0.026 / -0.071 |
-| 4 | pullback reversed 1h b100-t1 F08 | 272 / 59.6 % / +0.047 / -0.099 | 92 / -0.049 | 241 / 47.3 % / -0.144 / -0.241 |
-| 5 | cdl_three_outside_up native 1h b025-trail F00 | 156 / 44.9 % / +0.074 / -0.079 | 56 / -0.098 | 127 / 41.7 % / -0.073 / -0.186 |
-| 6 | tl_formed reversed 1h b100-trail F07 | 201 / 35.8 % / +0.068 / -0.124 | 79 / -0.138 | 212 / 33.0 % / -0.052 / -0.179 |
-| 7 | fib_ext native 15m b100-trail F07 | 293 / 46.1 % / -0.056 / -0.145 | 108 / -0.257 | 299 / 46.8 % / -0.046 / -0.103 |
-| 8 | swing native 1h b100-lvl F07 | 217 / 47.5 % / +0.067 / -0.054 | 85 / +0.014 | 234 / 40.6 % / -0.080 / -0.164 |
-| 9 | cdl_tweezer_top reversed 1h b025-trail F00 | 143 / 22.4 % / +0.105 / -0.426 | 43 / -0.568 | 110 / 15.5 % / -0.530 / -0.857 |
-| 10 | choch reversed 1h b100-trail F09 | 183 / 38.3 % / +0.125 / -0.097 | 62 / +0.046 | 139 / 33.1 % / -0.001 / -0.130 |
+Main line per rule (validation; BTC | ETH):
 
-**Read the BTC months 1-18 column with care:** it contains the discovery year on which these
-rules were picked, so it flatters them. After picking (validation) 8 of 10 lost money at 1x costs
-and all 10 at 2x; at 2x costs months 1-18 is negative for 9 of 10 on BTC and 10 of 10 on ETH.
-Every months 1-18 sample has at least 110 trades, so the main view's "low evidence" flag (below
-100) does not appear with these numbers; in Details it marks 17 of the 20 validation rows
-(BTC 43-92 trades for 9 rules; ETH 39-86 for 8 rules).
+| # | label | BTC main line | ETH main line |
+|---|---|---|---|
+| 1 | fib_touch native 1h b025-trail F09 | ended above 0 R 33% (n=83, low evidence), -0.21 R | ended above 0 R 22% (n=80, low evidence), -0.45 R |
+| 2 | fib_leg native 1h b025-trail F09 | ended above 0 R 32% (n=79, low evidence), -0.32 R | ended above 0 R 26% (n=76, low evidence), -0.17 R |
+| 3 | ema_cross native 15m b100-t3 F07 | hit rate 18% (n=84, low evidence), -0.42 R | hit rate 32% (n=71, low evidence), +0.22 R |
+| 4 | pullback reversed 1h b100-t1 F08 | hit rate 54% (n=92, low evidence), -0.05 R | hit rate 47% (n=85, low evidence), -0.15 R |
+| 5 | cdl_three_outside_up native 1h b025-trail F00 | ended above 0 R 39% (n=56, low evidence), -0.10 R | ended above 0 R 35% (n=54, low evidence), -0.36 R |
+| 6 | tl_formed reversed 1h b100-trail F07 | ended above 0 R 32% (n=79, low evidence), -0.14 R | ended above 0 R 29% (n=86, low evidence), -0.16 R |
+| 7 | fib_ext native 15m b100-trail F07 | ended above 0 R 37% (n=108), -0.26 R | ended above 0 R 51% (n=110), -0.03 R |
+| 8 | swing native 1h b100-lvl F07 | hit rate 46% (n=85, low evidence), +0.01 R | hit rate 43% (n=101), -0.02 R |
+| 9 | cdl_tweezer_top reversed 1h b025-trail F00 | ended above 0 R 19% (n=43, low evidence), -0.57 R | ended above 0 R 8% (n=39, low evidence), -1.03 R |
+| 10 | choch reversed 1h b100-trail F09 | ended above 0 R 40% (n=62, low evidence), +0.05 R | ended above 0 R 27% (n=49, low evidence), -0.42 R |
+
+17 of the 20 lines carry "low evidence"; only rule 7 (both symbols) and rule 8 on ETH have at
+least 100 validation trades. Three lines are positive at 1x (rule 3 ETH +0.22, rule 8 BTC +0.01, rule 10
+BTC +0.05), all with low evidence and all with 80 % intervals that include zero. At 2x costs rule
+8 BTC and rule 10 BTC turn negative; rule 3 on ETH stays positive (+0.13 R on 71 trades, 80 %
+interval -0.14 .. +0.39). The rules were picked on BTC, and on BTC rule 3 lost -0.42 R in the
+same period.
+
+In-sample, for reference (trades / hit rate / net R 1x / net R 2x):
+
+| # | label | BTC months 1-18 (in-sample) | ETH months 1-18 |
+|---|---|---|---|
+| 1 | fib_touch native 1h b025-trail F09 | 233 / 37.3 % / +0.269 / +0.010 | 223 / 28.7 % / +0.191 / -0.006 |
+| 2 | fib_leg native 1h b025-trail F09 | 222 / 36.0 % / +0.178 / -0.040 | 209 / 29.2 % / +0.128 / -0.039 |
+| 3 | ema_cross native 15m b100-t3 F07 | 190 / 26.8 % / -0.060 / -0.196 | 212 / 27.8 % / +0.026 / -0.071 |
+| 4 | pullback reversed 1h b100-t1 F08 | 272 / 59.6 % / +0.047 / -0.099 | 241 / 47.3 % / -0.144 / -0.241 |
+| 5 | cdl_three_outside_up native 1h b025-trail F00 | 156 / 44.9 % / +0.074 / -0.079 | 127 / 41.7 % / -0.073 / -0.186 |
+| 6 | tl_formed reversed 1h b100-trail F07 | 201 / 35.8 % / +0.068 / -0.124 | 212 / 33.0 % / -0.052 / -0.179 |
+| 7 | fib_ext native 15m b100-trail F07 | 293 / 46.1 % / -0.056 / -0.145 | 299 / 46.8 % / -0.046 / -0.103 |
+| 8 | swing native 1h b100-lvl F07 | 217 / 47.5 % / +0.067 / -0.054 | 234 / 40.6 % / -0.080 / -0.164 |
+| 9 | cdl_tweezer_top reversed 1h b025-trail F00 | 143 / 22.4 % / +0.105 / -0.426 | 110 / 15.5 % / -0.530 / -0.857 |
+| 10 | choch reversed 1h b100-trail F09 | 183 / 38.3 % / +0.125 / -0.097 | 139 / 33.1 % / -0.001 / -0.130 |
+
+The BTC months 1-18 column contains the discovery year on which these rules were picked, so it
+flatters them (rule 1: +0.27 R pooled, -0.21 R in validation).
 
 ## How an alert is decided (one code path)
 

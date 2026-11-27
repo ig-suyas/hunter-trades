@@ -65,9 +65,10 @@ pub fn local_time(t: i64, base: i64, offset_s: i64) -> String {
     }
 }
 
-/// The past-results line: months 1-18 of this rule on this symbol (historical, in-sample).
+/// The past-results line: the VALIDATION period of this rule on this symbol (out of sample: after
+/// the rule was picked on the discovery year). Historical, never a forecast.
 pub fn past_line(def: &RuleDef, st: &RuleStats) -> String {
-    let a = &st.all;
+    let a = &st.validation;
     let rate = match def.exit {
         Exit::Trail => "ended above 0 R",
         _ => "hit rate",
