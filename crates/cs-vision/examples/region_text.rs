@@ -12,7 +12,7 @@ fn main() -> Result<(), String> {
         let v: Vec<u32> = c.split(',').filter_map(|x| x.parse().ok()).collect();
         f = f.crop_px(v[0], v[1], v[2], v[3]);
     }
-    for (name, r) in cfg.regions.all() {
+    for (name, r) in cfg.layouts[0].regions.all() {
         let c = f.crop(&r);
         let l = e.read(
             &c.binarize(if std::env::var("CS_INK").is_ok() {

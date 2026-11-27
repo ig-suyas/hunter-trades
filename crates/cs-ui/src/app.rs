@@ -343,6 +343,8 @@ impl OverlayApp {
             return;
         };
         self.screen_state = w.state();
+        // The watcher's flag is the one source of truth for on/off.
+        self.screen_on = self.screen_state.enabled;
         if !self.screen_on || self.manual {
             self.screen_block = None;
             self.mismatch = None;
@@ -357,6 +359,10 @@ impl OverlayApp {
             self.screen_block = None;
             return;
         };
+        // Switch, block or check prices only on a reading confirmed by two consistent reads.
+        if !self.screen_state.confirmed {
+            return;
+        }
         let d = screen::decide(&r, &self.ctl.symbol, self.ctl.tf);
         self.screen_block = d.block;
         if let Some((sym, tf)) = d.switch {
@@ -633,6 +639,15 @@ impl eframe::App for OverlayApp {
             // While the screen shows a symbol or time frame without a feed, the footer does not
             // quote the numbers of the feed that is still running underneath.
             debug_front: self.screen_state.front_debug.clone(),
+            debug_failures: self
+                .screen_state
+                .failures
+                .iter()
+                .rev()
+                .take(3)
+                .rev()
+                .cloned()
+                .collect(),
             footer: if self.screen_block.is_some() {
                 copy::footer("", self.ctl.tf)
             } else {

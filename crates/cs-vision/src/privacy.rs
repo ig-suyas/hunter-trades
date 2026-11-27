@@ -90,6 +90,7 @@ mod tests {
             ("parse.rs", include_str!("parse.rs")),
             ("read.rs", include_str!("read.rs")),
             ("source.rs", include_str!("source.rs")),
+            ("stable.rs", include_str!("stable.rs")),
             ("video.rs", include_str!("video.rs")),
             ("watch.rs", include_str!("watch.rs")),
         ]

@@ -11,7 +11,7 @@ fn main() -> Result<(), String> {
     let mut e = Engines::detect();
     let f =
         cs_vision::video::frame_at(std::path::Path::new(&a[0]), a[1].parse().map_err(|_| "t")?)?;
-    let c = f.crop(&cfg.regions.legend);
+    let c = f.crop(&cfg.layouts[0].regions.legend);
     for k in [2, 3] {
         let l = e.read(&c.binarize(200).upscale(k))?;
         println!(

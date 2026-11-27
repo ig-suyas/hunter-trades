@@ -159,3 +159,61 @@ fn other_windows_are_never_captured() {
         None | Some(SymbolRead::Unknown)
     ));
 }
+
+/// Chrome stops repainting a fully covered window: the title (with the price) changes but the
+/// captured pixels stay the same. Such frames are not read.
+#[test]
+fn stale_frames_of_a_covered_window_are_not_read() {
+    let f = Arc::new(Frame::from_bgra(64, 64, vec![255; 64 * 64 * 4]).unwrap());
+    let steps: Vec<_> = (0..8u32)
+        .map(|k| {
+            let title = format!(
+                "BTCUSD 61,{} \u{25B2} +1.7% Unnamed - Google Chrome",
+                500 + k
+            );
+            (
+                Duration::from_millis(400 * u64::from(k)),
+                info(&title),
+                Arc::clone(&f),
+            )
+        })
+        .collect();
+    let w = Watcher::spawn(
+        VisionConfig::default_config().unwrap(),
+        move || Box::new(ScriptedSource::new(steps, Duration::ZERO)) as Box<dyn FrameSource>,
+        None,
+        true,
+    );
+    std::thread::sleep(Duration::from_millis(2_800));
+    let s = w.state();
+    println!("frames read {}, note {:?}", s.frames, s.note);
+    assert!(
+        s.frames <= 2,
+        "only the first picture(s) before the title moved on"
+    );
+    assert!(s.note.contains("not repainting"), "{}", s.note);
+}
+
+/// The on/off flag changes at once, before the thread acts on it (one source of truth for the
+/// panel's toggle and its text).
+#[test]
+fn enabled_flag_is_the_single_source_of_truth() {
+    let f = Arc::new(Frame::from_bgra(64, 64, vec![255; 64 * 64 * 4]).unwrap());
+    let steps = vec![(Duration::ZERO, info(BTC_TITLE), f)];
+    let w = Watcher::spawn(
+        VisionConfig::default_config().unwrap(),
+        move || Box::new(ScriptedSource::new(steps, Duration::ZERO)) as Box<dyn FrameSource>,
+        None,
+        true,
+    );
+    assert!(
+        w.state().enabled,
+        "on from the start, before the first poll"
+    );
+    w.set_enabled(false);
+    let s = w.state();
+    assert!(!s.enabled);
+    assert_eq!(s.status, WatchStatus::Off);
+    w.set_enabled(true);
+    assert!(w.state().enabled);
+}

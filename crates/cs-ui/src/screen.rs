@@ -75,6 +75,9 @@ mod tests {
             engine: None,
             ocr_calls: 4,
             read_ms: 70.0,
+            tf_from: "toolbar",
+            tf_note: None,
+            held: Vec::new(),
         }
     }
 
@@ -143,6 +146,19 @@ mod tests {
             assert!(b.starts_with(words), "{raw}: {b}");
             assert!(b.contains("5m, 15m and 1h only"), "{b}");
         }
+    }
+
+    #[test]
+    fn the_overlay_never_uses_the_diagnostic_source() {
+        for (name, src) in [
+            ("app.rs", include_str!("app.rs")),
+            ("main.rs", include_str!("main.rs")),
+            ("view.rs", include_str!("view.rs")),
+        ] {
+            assert!(!src.contains("DiagTitleSource"), "{name}");
+            assert!(!src.contains("diag-by-title"), "{name}");
+        }
+        assert!(include_str!("app.rs").contains("XcapSource::new()"));
     }
 
     #[test]

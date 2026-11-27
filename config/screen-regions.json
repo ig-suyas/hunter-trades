@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "Phase 7 screen awareness. Regions are fractions (0..1) of the captured window. Only the four regions below are ever read; the exclude list must never overlap them (checked at load). Reference layout: TradingView in a maximised Chrome window, 1920 x 1020 (1080 screen minus the taskbar), light or dark theme. Title patterns: parts {ticker} {price} {arrow} {change} or literal text, matched against the start of the window title.",
+  "about": "Phase 7 screen awareness. Regions are fractions (0..1) of the captured window. Only the five read regions of a layout are ever read; each layout's exclude list must never overlap them (checked at load). Layouts are tried in order; the reader keeps the one that finds the chart. Title patterns: parts {ticker} {price} {arrow} {change} or literal text, matched against the start of the window title.",
   "capture": {
     "fps": 2.0,
     "title_poll_ms": 150,
@@ -37,67 +37,150 @@
     "peringatan",
     "putarulang"
   ],
-  "regions": {
-    "symbol": {
-      "x": 0.07,
-      "y": 0.1006,
-      "w": 0.07,
-      "h": 0.0318
-    },
-    "legend": {
-      "x": 0.075,
-      "y": 0.1451,
-      "w": 0.285,
-      "h": 0.0328
-    },
-    "page": {
-      "x": 0.38,
-      "y": 0.1006,
-      "w": 0.24,
-      "h": 0.0318
-    },
-    "price_axis": {
-      "x": 0.875,
-      "y": 0.1482,
-      "w": 0.044,
-      "h": 0.7412
-    }
-  },
-  "exclude": [
+  "layouts": [
     {
-      "name": "browser tabs and address bar (other sites)",
-      "x": 0.0,
-      "y": 0.0,
-      "w": 1.0,
-      "h": 0.0953
+      "name": "Chrome maximised, compact browser bars, watchlist panel open on the right (the user's window, measured live 2026-11-27, capture 1913 x 1013)",
+      "regions": {
+        "symbol": {
+          "x": 0.07,
+          "y": 0.069,
+          "w": 0.07,
+          "h": 0.034
+        },
+        "interval": {
+          "x": 0.145,
+          "y": 0.069,
+          "w": 0.125,
+          "h": 0.034
+        },
+        "legend": {
+          "x": 0.075,
+          "y": 0.121,
+          "w": 0.285,
+          "h": 0.032
+        },
+        "page": {
+          "x": 0.272,
+          "y": 0.069,
+          "w": 0.19,
+          "h": 0.034
+        },
+        "price_axis": {
+          "x": 0.738,
+          "y": 0.115,
+          "w": 0.045,
+          "h": 0.765
+        }
+      },
+      "exclude": [
+        {
+          "name": "browser tabs and address bar (other sites)",
+          "x": 0.0,
+          "y": 0.0,
+          "w": 1.0,
+          "h": 0.065
+        },
+        {
+          "name": "account menu and trade button (top right)",
+          "x": 0.8,
+          "y": 0.065,
+          "w": 0.2,
+          "h": 0.05
+        },
+        {
+          "name": "order buttons with prices",
+          "x": 0.075,
+          "y": 0.155,
+          "w": 0.13,
+          "h": 0.04
+        },
+        {
+          "name": "right side panel (watchlist, account details)",
+          "x": 0.785,
+          "y": 0.065,
+          "w": 0.215,
+          "h": 0.845
+        },
+        {
+          "name": "bottom trading panel (balance, positions, orders)",
+          "x": 0.0,
+          "y": 0.91,
+          "w": 1.0,
+          "h": 0.09
+        }
+      ]
     },
     {
-      "name": "account menu and trade button (top right)",
-      "x": 0.8,
-      "y": 0.0953,
-      "w": 0.2,
-      "h": 0.0476
-    },
-    {
-      "name": "order buttons with prices",
-      "x": 0.075,
-      "y": 0.18,
-      "w": 0.13,
-      "h": 0.0371
-    },
-    {
-      "name": "right side panel (watchlist, account details)",
-      "x": 0.93,
-      "y": 0.1429,
-      "w": 0.07,
-      "h": 0.7676
-    },
-    {
-      "name": "bottom trading panel (balance, positions, orders)",
-      "x": 0.0,
-      "y": 0.9106,
-      "w": 1.0,
-      "h": 0.0894
+      "name": "Chrome maximised with taller browser bars, no side panel (the trading1.mp4 recording)",
+      "regions": {
+        "symbol": {
+          "x": 0.07,
+          "y": 0.1006,
+          "w": 0.07,
+          "h": 0.0318
+        },
+        "interval": {
+          "x": 0.14,
+          "y": 0.1006,
+          "w": 0.27,
+          "h": 0.0318
+        },
+        "legend": {
+          "x": 0.075,
+          "y": 0.1451,
+          "w": 0.285,
+          "h": 0.0328
+        },
+        "page": {
+          "x": 0.38,
+          "y": 0.1006,
+          "w": 0.24,
+          "h": 0.0318
+        },
+        "price_axis": {
+          "x": 0.875,
+          "y": 0.1482,
+          "w": 0.044,
+          "h": 0.7412
+        }
+      },
+      "exclude": [
+        {
+          "name": "browser tabs and address bar (other sites)",
+          "x": 0.0,
+          "y": 0.0,
+          "w": 1.0,
+          "h": 0.0953
+        },
+        {
+          "name": "account menu and trade button (top right)",
+          "x": 0.8,
+          "y": 0.0953,
+          "w": 0.2,
+          "h": 0.0476
+        },
+        {
+          "name": "order buttons with prices",
+          "x": 0.075,
+          "y": 0.18,
+          "w": 0.13,
+          "h": 0.0371
+        },
+        {
+          "name": "right side panel (watchlist, account details)",
+          "x": 0.93,
+          "y": 0.1429,
+          "w": 0.07,
+          "h": 0.7676
+        },
+        {
+          "name": "bottom trading panel (balance, positions, orders)",
+          "x": 0.0,
+          "y": 0.9106,
+          "w": 1.0,
+          "h": 0.0894
+        }
+      ]
     }
   ],
   "symbols": {

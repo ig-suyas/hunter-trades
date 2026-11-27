@@ -75,17 +75,88 @@ pub fn parse_tf(tok: &str) -> Option<TfRead> {
         return None;
     }
     let n: u32 = if num.is_empty() { 1 } else { num.parse().ok()? };
-    if n == 0 || n > 720 {
+    // Counts the platform offers per unit (so an OCR slip such as "Sh" -> "5h" is refused).
+    let offered = match unit {
+        "m" => MINUTE_CODES.contains(&n),
+        "h" | "H" => [1, 2, 3, 4, 6, 8, 12].contains(&n),
+        "s" | "S" => [1, 5, 10, 15, 30, 45].contains(&n),
+        "D" | "d" => (1..=7).contains(&n),
+        "W" | "w" => (1..=4).contains(&n),
+        "M" => [1, 2, 3, 6, 12].contains(&n),
+        "T" | "R" => (1..=1000).contains(&n),
+        _ => false,
+    };
+    if !offered {
         return None;
     }
     let tf = match unit {
         "m" => minutes(n),
         "h" | "H" => minutes(n * 60),
         "D" | "d" => (n == 1).then_some(Timeframe::D1),
-        "W" | "w" | "M" | "S" => None,
+        // Weeks, months, seconds (legend "1S", toolbar "1s"), ticks and ranges: no feed.
+        "W" | "w" | "M" | "S" | "s" | "T" | "R" => None,
         _ => return None,
     };
     Some(TfRead { raw: t, tf })
+}
+
+/// The interval on the toolbar button ("5m", "15m", "1h", "4h", "D", "1W", "30s"), with a short
+/// list of safe OCR corrections. The last character is the unit and is never changed; only the
+/// count before it is corrected, and only into digits: S/s -> 5, I/l/| -> 1, O/o -> 0, B -> 8,
+/// Z -> 2 ("Sm" -> "5m", `ISm` -> "15m", "lh" -> "1h", "3Om" -> "30m"). A bare number (unit lost
+/// by OCR) is read as minutes, as in the legend.
+pub fn parse_toolbar_tf(tok: &str) -> Option<TfRead> {
+    let t = tok.trim().trim_matches(|c: char| !c.is_alphanumeric());
+    if t.is_empty() || t.chars().count() > 4 {
+        return None;
+    }
+    if let Some(r) = parse_tf(t) {
+        return Some(r);
+    }
+    let unit = t.chars().last()?;
+    let count: String = t.chars().take(t.chars().count() - 1).collect();
+    if count.is_empty() || !"mhsDWMS".contains(unit) {
+        return None;
+    }
+    let fixed: String = count
+        .chars()
+        .map(|c| match c {
+            'S' | 's' => '5',
+            'I' | 'l' | '|' => '1',
+            'O' | 'o' => '0',
+            'B' => '8',
+            'Z' => '2',
+            c => c,
+        })
+        .collect();
+    if !fixed.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    parse_tf(&format!("{fixed}{unit}"))
+}
+
+/// The one interval on the toolbar: every token that reads as an interval, and the answer only
+/// when there is exactly one distinct value (a favourites bar with several intervals cannot tell
+/// which one is active).
+pub fn toolbar_interval(lines: &[String]) -> Option<TfRead> {
+    let mut found: Vec<TfRead> = Vec::new();
+    for tok in lines.iter().flat_map(|l| l.split_whitespace()) {
+        if let Some(r) = parse_toolbar_tf(tok)
+            && !found.iter().any(|f| f.raw == r.raw)
+        {
+            found.push(r);
+        }
+    }
+    (found.len() == 1).then(|| found.remove(0))
+}
+
+/// Same interval written two ways ("5m" on the toolbar, "5" in the legend; "D" and "1D").
+pub fn same_interval(a: &TfRead, b: &TfRead) -> bool {
+    let canon = |r: &TfRead| match r.raw.as_str() {
+        "D" | "W" | "M" => format!("1{}", r.raw),
+        _ => r.label(),
+    };
+    canon(a) == canon(b) || (a.tf.is_some() && a.tf == b.tf)
 }
 
 /// Digit fixes inside a token that is mostly digits.
@@ -569,6 +640,130 @@ mod tests {
         ] {
             assert!(parse_title(title, &pats).is_none(), "{title}");
         }
+    }
+
+    /// Every interval format seen on real `TradingView`: toolbar (units), legend (bare minutes),
+    /// days/weeks/months, seconds; supported for context are 5m, 15m and 1h only.
+    #[test]
+    fn toolbar_and_legend_interval_formats() {
+        let supported = [Timeframe::M5, Timeframe::M15, Timeframe::H1];
+        for (tok, label, tf) in [
+            ("1m", "1m", Some(Timeframe::M1)),
+            ("3m", "3m", None),
+            ("5m", "5m", Some(Timeframe::M5)),
+            ("15m", "15m", Some(Timeframe::M15)),
+            ("30m", "30m", None),
+            ("1h", "1h", Some(Timeframe::H1)),
+            ("2h", "2h", None),
+            ("4h", "4h", Some(Timeframe::H4)),
+            ("D", "D", Some(Timeframe::D1)),
+            ("1D", "1D", Some(Timeframe::D1)),
+            ("W", "W", None),
+            ("1W", "1W", None),
+            ("M", "M", None),
+            ("1M", "1M", None),
+            ("1s", "1s", None),
+            ("5s", "5s", None),
+            ("30s", "30s", None),
+            ("1S", "1S", None),
+        ] {
+            let r = parse_toolbar_tf(tok).unwrap_or_else(|| panic!("toolbar {tok}"));
+            assert_eq!((r.label().as_str(), r.tf), (label, tf), "toolbar {tok}");
+        }
+        for (tok, label, tf) in [
+            ("1", "1m", Some(Timeframe::M1)),
+            ("3", "3m", None),
+            ("5", "5m", Some(Timeframe::M5)),
+            ("15", "15m", Some(Timeframe::M15)),
+            ("30", "30m", None),
+            ("60", "1h", Some(Timeframe::H1)),
+            ("120", "120m", None),
+            ("240", "4h", Some(Timeframe::H4)),
+            ("1D", "1D", Some(Timeframe::D1)),
+            ("1W", "1W", None),
+            ("1M", "1M", None),
+            ("1S", "1S", None),
+        ] {
+            let r = parse_tf(tok).unwrap_or_else(|| panic!("legend {tok}"));
+            assert_eq!((r.label().as_str(), r.tf), (label, tf), "legend {tok}");
+        }
+        // Context only for 5m, 15m, 1h.
+        let ok: Vec<&str> = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "D", "1W"]
+            .into_iter()
+            .filter(|t| {
+                parse_toolbar_tf(t)
+                    .and_then(|r| r.tf)
+                    .is_some_and(|x| supported.contains(&x))
+            })
+            .collect();
+        assert_eq!(ok, ["5m", "15m", "1h"]);
+    }
+
+    /// The short list of OCR corrections, and what they must never do.
+    #[test]
+    fn toolbar_ocr_corrections() {
+        for (tok, want) in [
+            ("Sm", "5m"),
+            ("ISm", "15m"),
+            ("lSm", "15m"),
+            ("l5m", "15m"),
+            ("lh", "1h"),
+            ("Ih", "1h"),
+            ("3Om", "30m"),
+            ("4h", "4h"),
+            ("ID", "1D"),
+            ("Ss", "5s"),
+        ] {
+            let r = parse_toolbar_tf(tok).unwrap_or_else(|| panic!("{tok}"));
+            assert_eq!(r.label(), want, "{tok}");
+        }
+        // Never: words, lone letters, counts the platform does not offer, a changed unit.
+        for tok in [
+            "Indikator",
+            "Alert",
+            "fx",
+            "m",
+            "S",
+            "h",
+            "Sh",
+            "7m",
+            "Bm",
+            "Om",
+            "1x",
+        ] {
+            assert!(parse_toolbar_tf(tok).is_none(), "{tok}");
+        }
+        assert_eq!(
+            parse_toolbar_tf("1m").unwrap().tf,
+            Some(Timeframe::M1),
+            "m = minutes"
+        );
+        assert_eq!(parse_toolbar_tf("1M").unwrap().tf, None, "M = months");
+    }
+
+    #[test]
+    fn toolbar_has_one_interval_and_cross_check() {
+        let v = |s: &[&str]| s.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            toolbar_interval(&v(&["BTCUSD", "+", "5m", "fx Indicators"])).map(|r| r.label()),
+            Some("5m".into())
+        );
+        assert_eq!(
+            toolbar_interval(&v(&["D", "Indikator"])).map(|r| r.label()),
+            Some("D".into())
+        );
+        // A favourites bar lists several: no single answer.
+        assert!(toolbar_interval(&v(&["1m 3m 5m 15m 30m 1h 4h D W"])).is_none());
+        assert!(toolbar_interval(&v(&["Indicators Alert Replay"])).is_none());
+        let t = |s: &str| parse_toolbar_tf(s).unwrap();
+        let l = |s: &str| parse_tf(s).unwrap();
+        assert!(same_interval(&t("5m"), &l("5")));
+        assert!(same_interval(&t("1h"), &l("60")));
+        assert!(same_interval(&t("D"), &l("1D")));
+        assert!(same_interval(&t("W"), &l("1W")));
+        assert!(same_interval(&t("3m"), &l("3")));
+        assert!(!same_interval(&t("15m"), &l("5")));
+        assert!(!same_interval(&t("D"), &l("1W")));
     }
 
     #[test]

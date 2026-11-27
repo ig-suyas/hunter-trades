@@ -70,6 +70,13 @@ pub struct Reading {
     pub ocr_calls: u32,
     /// Time spent reading this frame (crop + OCR + parse), milliseconds.
     pub read_ms: f64,
+    /// Where the time frame came from: "toolbar", "legend", "toolbar+legend" (both read and
+    /// equal) or "none".
+    pub tf_from: &'static str,
+    /// Why no time frame was taken although something was read ("toolbar 5m vs legend 15").
+    pub tf_note: Option<String>,
+    /// Fields filled from the last good read by the stability rule ([`crate::stable`]).
+    pub held: Vec<&'static str>,
 }
 
 impl Reading {
@@ -97,9 +104,18 @@ impl Reading {
                 )
             },
         );
+        let note = self
+            .tf_note
+            .as_ref()
+            .map_or_else(String::new, |n| format!(" ({n})"));
+        let held = if self.held.is_empty() {
+            String::new()
+        } else {
+            format!(", held: {}", self.held.join("+"))
+        };
         format!(
-            "page {:?}, {sym} [{}], {tf}, {px}, {} OCR calls, {:.0} ms",
-            self.page, self.symbol_from, self.ocr_calls, self.read_ms
+            "page {:?}, {sym} [{}], {tf} [{}]{note}, {px}{held}, {} OCR calls, {:.0} ms",
+            self.page, self.symbol_from, self.tf_from, self.ocr_calls, self.read_ms
         )
     }
 }
@@ -108,7 +124,12 @@ impl Reading {
 pub struct Reader {
     pub cfg: VisionConfig,
     pub engines: Engines,
-    cache: HashMap<&'static str, (u64, Vec<String>)>,
+    /// OCR results per (layout, region key), with the hash of the pixels they came from.
+    cache: HashMap<(usize, &'static str), (u64, Vec<String>)>,
+    /// Layout in use (index into `cfg.layouts`): the one that found the chart last time.
+    pub layout: usize,
+    /// Layout of the pass in progress (cache key).
+    cur: usize,
     /// Text read from the last price label and its rows in the axis region (diagnostics; text
     /// only).
     pub last_label: Option<((u32, u32), Vec<String>)>,
@@ -192,6 +213,8 @@ impl Reader {
             cfg,
             engines,
             cache: HashMap::new(),
+            layout: 0,
+            cur: 0,
             last_label: None,
         }
     }
@@ -210,7 +233,7 @@ impl Reader {
         calls: &mut u32,
     ) -> Vec<String> {
         let h = src.hash();
-        if let Some((ch, lines)) = self.cache.get(key)
+        if let Some((ch, lines)) = self.cache.get(&(self.cur, key))
             && *ch == h
         {
             return lines.clone();
@@ -219,7 +242,7 @@ impl Reader {
         privacy::debug_crop(key, &img);
         *calls += 1;
         let lines = self.engines.read(&img).map(ordered).unwrap_or_default();
-        self.cache.insert(key, (h, lines.clone()));
+        self.cache.insert((self.cur, key), (h, lines.clone()));
         lines
     }
 
@@ -258,7 +281,7 @@ impl Reader {
     /// The ticker in the symbol region. A ticker in the symbol table is taken from one read;
     /// any other needs two reads that agree (so "UUUSD" from a bad read of XAUUSD is not shown).
     fn read_ticker(&mut self, frame: &Frame, calls: &mut u32) -> Option<String> {
-        let crop = frame.crop(&self.cfg.regions.symbol);
+        let crop = frame.crop(&self.cfg.layouts[self.cur].regions.symbol);
         let k = self.cfg.ocr_scale;
         let ladder: [(&'static str, Option<usize>, u32); 4] = [
             ("symbol", Some(200), k),
@@ -279,15 +302,19 @@ impl Reader {
         None
     }
 
-    /// Reads one frame. `title` is the parsed window title, if it had the chart shape.
-    // One pass over the regions, top to bottom, reads best as one function.
-    #[allow(clippy::too_many_lines)]
-    pub fn read(&mut self, frame: &Frame, title: Option<&TitleRead>) -> Reading {
-        let t0 = Instant::now();
-        let mut calls = 0u32;
-        self.last_label = None;
-        let regions = self.cfg.regions.clone();
-        let page_lines = self.region("page", frame, regions.page, &mut calls);
+    /// Page words in the toolbar region and the legend of layout `li` (the legend is retried
+    /// with other preprocessing on a chart page, as OCR drops the short interval between the
+    /// legend's dots now and then; each try is cached until the legend's pixels change).
+    fn chart_evidence(
+        &mut self,
+        frame: &Frame,
+        li: usize,
+        title: Option<&TitleRead>,
+        calls: &mut u32,
+    ) -> (bool, Option<Legend>) {
+        self.cur = li;
+        let regions = self.cfg.layouts[li].regions.clone();
+        let page_lines = self.region("page", frame, regions.page, calls);
         let toolbar = page_lines
             .iter()
             .map(|l| parse::letters(l))
@@ -297,12 +324,8 @@ impl Reader {
             .page_words
             .iter()
             .any(|w| toolbar.contains(w.as_str()));
-        // OCR drops the short interval between the legend's dots now and then; on a chart page
-        // the legend is retried with other preprocessing until it parses (each try is cached
-        // until the legend's pixels change).
         let legend_crop = frame.crop(&regions.legend);
         let k = self.cfg.ocr_scale;
-        let mut legend: Option<Legend> = None;
         let tries: [(&'static str, Option<usize>, u32); 5] = [
             ("legend", Some(50), k),
             ("legend_b200", Some(200), k),
@@ -314,14 +337,47 @@ impl Reader {
             if i > 0 && !toolbar_chart && title.is_none() {
                 break;
             }
-            let lines = self.try_read(key, &legend_crop, bin, scale, &mut calls);
-            legend = parse::parse_legend(&lines.join(" "));
-            if legend.is_some() {
+            let lines = self.try_read(key, &legend_crop, bin, scale, calls);
+            if let Some(l) = parse::parse_legend(&lines.join(" ")) {
+                return (toolbar_chart, Some(l));
+            }
+        }
+        (toolbar_chart, None)
+    }
+
+    /// Reads one frame. `title` is the parsed window title, if it had the chart shape.
+    // One pass over the regions, top to bottom, reads best as one function.
+    #[allow(clippy::too_many_lines)]
+    pub fn read(&mut self, frame: &Frame, title: Option<&TitleRead>) -> Reading {
+        let t0 = Instant::now();
+        let mut calls = 0u32;
+        self.last_label = None;
+        // The layout that found the chart last time first, then the others; a layout fits when
+        // its toolbar region shows the chart toolbar or its legend region a legend.
+        let n = self.cfg.layouts.len();
+        let first = self.layout.min(n.saturating_sub(1));
+        let mut found: Option<(usize, Option<Legend>)> = None;
+        for step in 0..n {
+            let li = (first + step) % n;
+            let (toolbar_chart, legend) = self.chart_evidence(frame, li, title, &mut calls);
+            if toolbar_chart || legend.is_some() {
+                found = Some((li, legend));
                 break;
             }
         }
+        let fits = found.is_some();
+        let (li, legend) = match found {
+            Some((li, legend)) => {
+                self.layout = li;
+                (li, legend)
+            }
+            None => (first, None),
+        };
+        self.cur = li;
+        let regions = self.cfg.layouts[li].regions.clone();
+        let k = self.cfg.ocr_scale;
         // A window title in the chart-tab shape (ticker, price, change) also says "chart".
-        let chart = legend.is_some() || toolbar_chart || title.is_some();
+        let chart = fits || title.is_some();
         if !chart {
             return Reading {
                 page: PageKind::Other,
@@ -333,8 +389,38 @@ impl Reader {
                 engine: self.engines.last,
                 ocr_calls: calls,
                 read_ms: t0.elapsed().as_secs_f64() * 1000.0,
+                tf_from: "none",
+                tf_note: None,
+                held: Vec::new(),
             };
         }
+        // Time frame: the toolbar's interval button first, the legend second; when both are
+        // read they must agree.
+        let interval_crop = frame.crop(&regions.interval);
+        let mut toolbar_tf = None;
+        for (key, bin, scale) in [
+            ("interval", Some(200), k),
+            ("interval_b50", Some(50), k),
+            ("interval_g3", None, k + 1),
+        ] {
+            let lines = self.try_read(key, &interval_crop, bin, scale, &mut calls);
+            toolbar_tf = parse::toolbar_interval(&lines);
+            if toolbar_tf.is_some() {
+                break;
+            }
+        }
+        let legend_tf = legend.as_ref().map(|l| l.tf.clone());
+        let (tf, tf_from, tf_note) = match (toolbar_tf, legend_tf) {
+            (Some(a), Some(b)) if parse::same_interval(&a, &b) => (Some(a), "toolbar+legend", None),
+            (Some(a), Some(b)) => (
+                None,
+                "none",
+                Some(format!("toolbar {} vs legend {}", a.raw, b.raw)),
+            ),
+            (Some(a), None) => (Some(a), "toolbar", None),
+            (None, Some(b)) => (Some(b), "legend", None),
+            (None, None) => (None, "none", None),
+        };
         let (ticker, from) = if let Some(t) = self.read_ticker(frame, &mut calls) {
             (Some(t), "symbol region")
         } else if let Some(t) = title {
@@ -393,13 +479,16 @@ impl Reader {
         Reading {
             page: PageKind::Chart,
             symbol,
-            tf: legend.as_ref().map(|l| l.tf.clone()),
+            tf,
             price,
             source: legend.map(|l| l.exchange),
             symbol_from: from,
             engine: self.engines.last,
             ocr_calls: calls,
             read_ms: t0.elapsed().as_secs_f64() * 1000.0,
+            tf_from,
+            tf_note,
+            held: Vec::new(),
         }
     }
 }

@@ -54,11 +54,15 @@ pub const FOLLOW_SCREEN: &str = "Follow screen";
 pub fn screen_line(state: &cs_vision::WatchState, manual: bool) -> String {
     use cs_vision::read::{PageKind, SymbolRead};
     use cs_vision::watch::WatchStatus;
+    // One source of truth: the same `enabled` flag drives the toggle.
+    if !state.enabled {
+        return "Screen reading is off.".into();
+    }
     if manual {
         return "Manual pick: the screen is ignored.".into();
     }
     match state.status {
-        WatchStatus::Off => "Screen reading is off.".into(),
+        WatchStatus::Off => "Starting screen reading\u{2026}".into(),
         WatchStatus::NoEngine => "Screen reading unavailable: no OCR engine.".into(),
         WatchStatus::Waiting => "TradingView not in front.".into(),
         WatchStatus::Reading => match &state.reading {
@@ -99,7 +103,12 @@ pub fn screen_line(state: &cs_vision::WatchState, manual: bool) -> String {
                 } else {
                     ""
                 };
-                format!("Screen: {sym} {tf} \u{00B7} {px}{below}")
+                let held = if r.held.is_empty() {
+                    String::new()
+                } else {
+                    " (last good read held)".to_string()
+                };
+                format!("Screen: {sym} {tf} \u{00B7} {px}{below}{held}")
             }
         },
     }
@@ -812,6 +821,7 @@ mod tests {
                     },
                 ] {
                     let s = WatchState {
+                        enabled: true,
                         status: st,
                         reading: Some(Reading {
                             page,
@@ -823,6 +833,9 @@ mod tests {
                             engine: None,
                             ocr_calls: 1,
                             read_ms: 1.0,
+                            tf_from: "toolbar",
+                            tf_note: None,
+                            held: Vec::new(),
                         }),
                         ..WatchState::default()
                     };
@@ -845,6 +858,7 @@ mod tests {
             exchange: "BTCUSDT".into(),
         };
         let state = |sym: SymbolRead, tf: Option<&str>| WatchState {
+            enabled: true,
             status: WatchStatus::Reading,
             reading: Some(Reading {
                 page: PageKind::Chart,
@@ -856,14 +870,34 @@ mod tests {
                 engine: None,
                 ocr_calls: 1,
                 read_ms: 1.0,
+                tf_from: "toolbar",
+                tf_note: None,
+                held: Vec::new(),
             }),
             ..WatchState::default()
         };
         let waiting = WatchState {
+            enabled: true,
             status: WatchStatus::Waiting,
             ..WatchState::default()
         };
         assert_eq!(screen_line(&waiting, false), "TradingView not in front.");
+        // One source of truth: the toggle shows `enabled`, and so does the text.
+        let off = WatchState {
+            enabled: false,
+            status: WatchStatus::Reading,
+            ..WatchState::default()
+        };
+        assert_eq!(screen_line(&off, false), "Screen reading is off.");
+        let starting = WatchState {
+            enabled: true,
+            status: WatchStatus::Off,
+            ..WatchState::default()
+        };
+        assert_eq!(
+            screen_line(&starting, false),
+            "Starting screen reading\u{2026}"
+        );
         assert_eq!(
             screen_line(&state(SymbolRead::Unknown, Some("15")), false),
             "symbol not read"

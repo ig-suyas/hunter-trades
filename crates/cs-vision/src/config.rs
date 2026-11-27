@@ -30,20 +30,31 @@ pub struct Platform {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Regions {
     pub symbol: RectF,
+    /// The toolbar's interval button ("5m", "D").
+    pub interval: RectF,
     pub legend: RectF,
     pub page: RectF,
     pub price_axis: RectF,
 }
 
 impl Regions {
-    pub fn all(&self) -> [(&'static str, RectF); 4] {
+    pub fn all(&self) -> [(&'static str, RectF); 5] {
         [
             ("symbol", self.symbol),
+            ("interval", self.interval),
             ("legend", self.legend),
             ("page", self.page),
             ("price_axis", self.price_axis),
         ]
     }
+}
+
+/// One window layout: where the regions are, and what must never be read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
+    pub name: String,
+    pub regions: Regions,
+    pub exclude: Vec<(String, RectF)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,8 +64,9 @@ pub struct VisionConfig {
     pub ocr_scale: u32,
     pub price_tolerance_pct: f64,
     pub platforms: Vec<Platform>,
-    pub regions: Regions,
-    pub exclude: Vec<(String, RectF)>,
+    /// Layouts in order of preference; the reader uses the one that finds the chart (and keeps
+    /// it while it does).
+    pub layouts: Vec<Layout>,
     /// Words of the chart toolbar (letters only, lower case) that mark a chart page.
     pub page_words: Vec<String>,
     /// Platform ticker (upper case) -> exchange symbol.
@@ -109,14 +121,57 @@ impl VisionConfig {
     pub fn from_json(s: &str) -> Result<VisionConfig, String> {
         let v: Value = serde_json::from_str(s).map_err(|e| format!("config: {e}"))?;
         let cap = v.get("capture").ok_or("config: missing capture")?;
-        let r = v.get("regions").ok_or("config: missing regions")?;
-        let reg = |k: &str| {
-            rect(
-                r.get(k)
-                    .ok_or_else(|| format!("config: missing region {k}"))?,
-                k,
-            )
-        };
+        let mut layouts = Vec::new();
+        for l in v
+            .get("layouts")
+            .and_then(Value::as_array)
+            .ok_or("config: missing layouts")?
+        {
+            let name = l
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unnamed layout")
+                .to_string();
+            let r = l
+                .get("regions")
+                .ok_or_else(|| format!("config: layout {name:?} has no regions"))?;
+            let reg = |k: &str| {
+                rect(
+                    r.get(k)
+                        .ok_or_else(|| format!("config: layout {name:?} misses region {k}"))?,
+                    k,
+                )
+            };
+            let regions = Regions {
+                symbol: reg("symbol")?,
+                interval: reg("interval")?,
+                legend: reg("legend")?,
+                page: reg("page")?,
+                price_axis: reg("price_axis")?,
+            };
+            let mut exclude = Vec::new();
+            for e in l
+                .get("exclude")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let en = e
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unnamed")
+                    .to_string();
+                exclude.push((en.clone(), rect(e, &en)?));
+            }
+            layouts.push(Layout {
+                name,
+                regions,
+                exclude,
+            });
+        }
+        if layouts.is_empty() {
+            return Err("config: no layout".into());
+        }
         let mut platforms = Vec::new();
         for p in v
             .get("platforms")
@@ -137,20 +192,6 @@ impl VisionConfig {
                 title_patterns: strings(p.get("title_patterns")),
             });
         }
-        let mut exclude = Vec::new();
-        for e in v
-            .get("exclude")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let name = e
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unnamed")
-                .to_string();
-            exclude.push((name.clone(), rect(e, &name)?));
-        }
         let scale = num(cap, "ocr_scale").unwrap_or(2.0);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ocr_scale = scale.clamp(1.0, 4.0) as u32;
@@ -162,13 +203,7 @@ impl VisionConfig {
             ocr_scale,
             price_tolerance_pct: num(&v, "price_tolerance_pct")?,
             platforms,
-            regions: Regions {
-                symbol: reg("symbol")?,
-                legend: reg("legend")?,
-                page: reg("page")?,
-                price_axis: reg("price_axis")?,
-            },
-            exclude,
+            layouts,
             page_words: strings(v.get("page_words"))
                 .iter()
                 .map(|w| crate::parse::letters(w))
@@ -215,16 +250,38 @@ impl VisionConfig {
                 self.price_tolerance_pct
             ));
         }
-        for (name, r) in self.regions.all() {
-            if !r.valid() {
-                return Err(format!("config: region {name} is outside the window"));
-            }
-            for (en, e) in &self.exclude {
-                if r.intersects(e) {
+        for l in &self.layouts {
+            for (name, r) in l.regions.all() {
+                if !r.valid() {
                     return Err(format!(
-                        "config: region {name} overlaps the excluded area \"{en}\""
+                        "config: region {name} of layout {:?} is outside the window",
+                        l.name
                     ));
                 }
+                for (en, e) in &l.exclude {
+                    if r.intersects(e) {
+                        return Err(format!(
+                            "config: region {name} of layout {:?} overlaps the excluded area \"{en}\"",
+                            l.name
+                        ));
+                    }
+                }
+            }
+            for (en, e) in &l.exclude {
+                if !e.valid() {
+                    return Err(format!(
+                        "config: excluded area \"{en}\" is outside the window"
+                    ));
+                }
+            }
+            // Read regions cover only a small part of the window.
+            let area: f32 = l.regions.all().iter().map(|(_, r)| r.w * r.h).sum();
+            if area > 0.15 {
+                return Err(format!(
+                    "config: the read regions of layout {:?} cover {:.0} % of the window (limit 15 %)",
+                    l.name,
+                    area * 100.0
+                ));
             }
         }
         for p in &self.platforms {
@@ -243,21 +300,6 @@ impl VisionConfig {
                     return Err(format!("config: unknown part {bad} in title pattern {t:?}"));
                 }
             }
-        }
-        for (en, e) in &self.exclude {
-            if !e.valid() {
-                return Err(format!(
-                    "config: excluded area \"{en}\" is outside the window"
-                ));
-            }
-        }
-        // Read regions cover only a small part of the window.
-        let area: f32 = self.regions.all().iter().map(|(_, r)| r.w * r.h).sum();
-        if area > 0.15 {
-            return Err(format!(
-                "config: the read regions cover {:.0} % of the window (limit 15 %)",
-                area * 100.0
-            ));
         }
         Ok(())
     }
@@ -278,7 +320,10 @@ mod tests {
         assert!((c.price_tolerance_pct - 0.3).abs() < 1e-9);
         assert!((1.0..=2.0).contains(&c.fps));
         assert_eq!(c.symbols.get("BTCUSD").map(String::as_str), Some("BTCUSDT"));
-        assert!(c.exclude.len() >= 4);
+        assert_eq!(c.layouts.len(), 2);
+        for l in &c.layouts {
+            assert!(l.exclude.len() >= 4, "{}", l.name);
+        }
         // Every exchange symbol in the table is one the feed supports.
         for x in c.symbols.values() {
             assert!(["BTCUSDT", "ETHUSDT"].contains(&x.as_str()), "{x}");
@@ -292,7 +337,7 @@ mod tests {
     #[test]
     fn overlap_with_excluded_area_is_refused() {
         let mut c = VisionConfig::default_config().unwrap();
-        c.regions.price_axis.h = 0.80;
+        c.layouts[0].regions.price_axis.h = 0.80;
         let e = c.validate().unwrap_err();
         assert!(e.contains("bottom trading panel"), "{e}");
     }
@@ -300,7 +345,7 @@ mod tests {
     #[test]
     fn whole_window_region_is_refused() {
         let mut c = VisionConfig::default_config().unwrap();
-        c.regions.page.h = 0.70;
+        c.layouts[0].regions.page.h = 0.70;
         assert!(c.validate().unwrap_err().contains("15 %"));
     }
 

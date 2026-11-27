@@ -16,6 +16,7 @@ pub mod parse;
 pub mod privacy;
 pub mod read;
 pub mod source;
+pub mod stable;
 pub mod video;
 pub mod watch;
 

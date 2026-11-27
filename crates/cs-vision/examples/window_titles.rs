@@ -39,7 +39,16 @@ fn main() {
         let shown = if browser && chart_like(&title) {
             format!("{title:?}")
         } else {
-            format!("[redacted, {} chars]", title.chars().count())
+            // Shape only: lower-case letters masked as "a", the rest kept.
+            let shape: String = title
+                .chars()
+                .map(|c| if c.is_lowercase() { 'a' } else { c })
+                .collect();
+            if browser {
+                format!("[shape {shape:?}]")
+            } else {
+                format!("[redacted, {} chars]", title.chars().count())
+            }
         };
         let info = cs_vision::source::WindowInfo {
             id: w.id().unwrap_or(0),

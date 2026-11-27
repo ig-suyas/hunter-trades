@@ -43,6 +43,8 @@ pub struct View<'a> {
     /// Program and title of the window in front: only with `CANDLESCOPE_VISION_DEBUG=1`, only
     /// in the expanded panel, held in memory and never logged.
     pub debug_front: Option<String>,
+    /// Debug flag only: the latest read failures with the window in front (newest last).
+    pub debug_failures: Vec<String>,
 }
 
 /// Inputs the user edits (kept by the app between frames).
@@ -241,6 +243,9 @@ pub fn footer(ui: &mut Ui, v: &View, out: &mut Vec<Action>) {
                     .size(pal::FONT_MIN)
                     .color(c(pal::WARN)),
             );
+            for f in &v.debug_failures {
+                wrap(ui, dim(format!("Debug \u{00B7} {f}")).size(pal::FONT_MIN));
+            }
         }
     }
     let r = v.recorder;

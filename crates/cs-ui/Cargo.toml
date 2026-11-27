@@ -29,3 +29,8 @@ flate2.workspace = true
 [[bin]]
 name = "candlescope-overlay"
 path = "src/main.rs"
+
+# Phase 7 check tool: the screen reading without the panel, one line per second.
+[[bin]]
+name = "vision-watch"
+path = "src/bin/vision_watch.rs"
