@@ -6,7 +6,7 @@ use cs_core::{Candle, Event};
 
 use crate::htf::{HtfSet, HtfSetParams, HtfSnap};
 use crate::util::{Adx, Atr, Ring, RollStats};
-use crate::zones::{SdParams, SdZones, SrParams, SrZones};
+use crate::zones::{SdParams, SdZone, SdZones, SrParams, SrZone, SrZones};
 
 /// Context parameters.
 #[derive(Debug, Clone, Copy)]
@@ -141,6 +141,16 @@ impl Context {
             scratch: Vec::with_capacity(32),
             htf: HtfSet::new(p.htf),
         }
+    }
+
+    /// Formed S/R zones as of the latest update (read only; the live context panel shows them).
+    pub fn sr_zones(&self) -> impl Iterator<Item = &SrZone> {
+        self.sr.zones()
+    }
+
+    /// Supply/demand zones as of the latest update (read only).
+    pub fn sd_zones(&self) -> &[SdZone] {
+        self.sd.zones()
     }
 
     pub fn update(&mut self, i: u32, c: &Candle) -> Features {

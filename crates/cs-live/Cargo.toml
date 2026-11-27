@@ -1,6 +1,6 @@
 [package]
 name = "cs-live"
-description = "Websocket ingest, incremental engine, signal logger"
+description = "Live context engine: exchange klines, the same detectors and context code as the backtest"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,3 +11,19 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+cs-core.workspace = true
+cs-patterns.workspace = true
+# Polite REST client (warm-up, gap backfill, exchange time) and the recorder's backoff rules.
+cs-data.workspace = true
+tungstenite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Parity test: the backtest's own batch preparation of features and events is the reference.
+cs-backtest.workspace = true
+sha2.workspace = true
+criterion = { workspace = true }
+
+[[bench]]
+name = "per_candle"
+harness = false

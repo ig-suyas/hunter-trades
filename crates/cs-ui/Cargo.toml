@@ -1,6 +1,6 @@
 [package]
 name = "cs-ui"
-description = "Always-on-top advisory overlay"
+description = "Always-on-top context overlay (context only, never signals or orders)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,3 +11,19 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+cs-core.workspace = true
+cs-live.workspace = true
+# Only the Phase 3 cost model (`cost::CostModel`) for the risk calculator; the engine is not used.
+cs-backtest.workspace = true
+cs-data.workspace = true
+cs-patterns.workspace = true
+eframe.workspace = true
+global-hotkey.workspace = true
+time.workspace = true
+serde_json.workspace = true
+# PNG screenshots: zlib stream and CRC-32 (already in the tree).
+flate2.workspace = true
+
+[[bin]]
+name = "candlescope-overlay"
+path = "src/main.rs"

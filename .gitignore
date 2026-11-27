@@ -23,6 +23,8 @@
 !/reports/trial-ledger.csv
 /reports/**/*.parquet
 /reports/**/*.png
+# ...except the overlay screenshots (13 small PNGs, ~0.9 MB, the Phase 5+6 record)
+!/reports/ui-screenshots/*.png
 /reports/**/*.zip
 
 # Secrets must never exist here, but ignore the usual names anyway
