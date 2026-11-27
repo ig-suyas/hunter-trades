@@ -14,6 +14,10 @@ workspace = true
 cs-core.workspace = true
 cs-data.workspace = true
 cs-patterns.workspace = true
+cs-backtest.workspace = true
+# Combined results hash of a backtest batch (already in the tree).
+sha2.workspace = true
+serde_json.workspace = true
 
 [[bin]]
 name = "candlescope"

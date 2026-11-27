@@ -3,6 +3,7 @@
 //! Advisory only: it never places orders and never needs broker or exchange keys. Network use is
 //! limited to downloading public market data.
 
+mod backtest;
 mod detect;
 
 use std::io::Write;
@@ -37,6 +38,14 @@ Commands:
                  --report reports/detect-<SYM>-<tf>.md  --gallery-n 10  --seed 1
                  --bench-reps 3  --prefix-checks 3
                  (then: python scripts/gallery.py <gallery.json> reports/detector-gallery)
+  backtest       simulate trades from detector events with costs and pessimistic fills;
+                 the last 183 days are a sealed holdout unless --open-holdout
+                 --symbol BTCUSDT  --tf 15m  --market um|spot  --rules random|all|<det>,<det>
+                 --cost-mult 1,2  --seed 1  --audit-cuts 3  --holdout-from YYYY-MM-DD
+                 --open-holdout  --risk 0.01  --equity 10000  --max-leverage 10
+                 --out-dir data/backtest  --report <file.md>
+                 --bench (time a full run: all history, all detectors x rule templates x cost
+                 levels; prints timings and a hash only, no outcome numbers)
   record-status  print the recorder's status file
   record-stop    ask a running recorder to stop (creates data/live/STOP)
 
@@ -306,6 +315,40 @@ fn cmd_detect(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_backtest(a: &Args) -> Result<(), String> {
+    let tf_s = a.get("--tf").unwrap_or("15m");
+    let tf = Timeframe::parse(tf_s).ok_or_else(|| format!("--tf: unknown time frame {tf_s}"))?;
+    let market = Market::parse(a.get("--market").unwrap_or("um")).ok_or("--market: spot|um")?;
+    let cost_mults = a
+        .list("--cost-mult", "1,2")
+        .iter()
+        .map(|x| {
+            x.parse::<f64>()
+                .map_err(|_| format!("--cost-mult: bad value {x}"))
+        })
+        .collect::<Result<Vec<f64>, String>>()?;
+    let o = backtest::BacktestOpts {
+        symbol: a.get("--symbol").unwrap_or("BTCUSDT").to_uppercase(),
+        tf,
+        market,
+        rules: a.get("--rules").unwrap_or("random").to_string(),
+        cost_mults,
+        seed: a.num("--seed", 1)?,
+        audit_cuts: a.num("--audit-cuts", 3)?,
+        holdout_from: backtest::parse_holdout(a.get("--holdout-from"))?,
+        open_holdout: a.has("--open-holdout"),
+        bench: a.has("--bench"),
+        sizing: cs_backtest::Sizing {
+            equity0: a.num("--equity", 10_000.0)?,
+            risk_frac: a.num("--risk", 0.01)?,
+            max_leverage: a.num("--max-leverage", 10.0)?,
+        },
+        out_dir: PathBuf::from(a.get("--out-dir").unwrap_or("data/backtest")),
+        report: a.get("--report").map(PathBuf::from),
+    };
+    backtest::run(&a.data_dir(), &o, &|s| out(s))
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = argv.first().cloned() else {
@@ -319,6 +362,7 @@ fn main() -> ExitCode {
         "resample" => cmd_resample(&a),
         "record" => cmd_record(&a),
         "detect" => cmd_detect(&a),
+        "backtest" => cmd_backtest(&a),
         "record-status" => record::status_text(&a.data_dir().live())
             .map(|s| out(&s))
             .map_err(|e| e.to_string()),

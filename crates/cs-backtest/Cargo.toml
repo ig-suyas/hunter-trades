@@ -11,3 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+cs-core.workspace = true
+cs-patterns.workspace = true
+cs-stats.workspace = true
+# Results hash (already in the tree through cs-data) and summary JSON (already used by cs-data).
+sha2.workspace = true
+serde_json.workspace = true

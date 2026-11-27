@@ -120,14 +120,24 @@ dependencies = [
 [[package]]
 name = "cs-backtest"
 version = "0.0.0"
+dependencies = [
+ "cs-core",
+ "cs-patterns",
+ "cs-stats",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "cs-cli"
 version = "0.0.0"
 dependencies = [
+ "cs-backtest",
  "cs-core",
  "cs-data",
  "cs-patterns",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

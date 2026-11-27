@@ -15,6 +15,8 @@ publish = false
 cs-core = { path = "crates/cs-core" }
 cs-data = { path = "crates/cs-data" }
 cs-patterns = { path = "crates/cs-patterns" }
+cs-stats = { path = "crates/cs-stats" }
+cs-backtest = { path = "crates/cs-backtest" }
 # Phase 1 (see handoff section 4 for why each one): blocking HTTP and WebSocket clients on the
 # Windows-native TLS stack (SChannel), so no async runtime and no C crypto build.
 ureq = { version = "3.5", default-features = false, features = ["native-tls"] }

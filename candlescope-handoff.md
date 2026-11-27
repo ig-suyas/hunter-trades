@@ -2,13 +2,17 @@
 
 A local indicator written in Rust. It studies two years of price history, tests every trading tactic against it, and shows only the setups that survive honest testing in a small always-on-top overlay next to the chart.
 
-Last updated: 2026-11-27 (IST) after the Phase 2 follow-up (higher-time-frame trend + healthy-pullback flag). Stage: Phase 2 done (tier-1 pattern engine); the Phase 1 recorder is still running. Project root: the `imp` folder.
+Last updated: 2026-11-27 (IST) after Phase 3 (backtest engine). Stage: Phase 3 done (event-driven backtester with costs, pessimistic fills, metrics and self-checks); the Phase 1 recorder is still running. Project root: the `imp` folder.
 
 ---
 
 ## 1. Current state
 
+**Stage:** Phase 3 (backtest engine) finished. New code in `crates/cs-backtest` (engine), `crates/cs-stats` (block bootstrap) and a new command `candlescope backtest`. The engine turns detector events into trades: entry at the next open after the `known_at` candle has closed, or a limit order at the event zone with a timeout; stop at the structural level (event `lo`/`hi`, else the signal candle's low/high) plus 0.25 ATR; targets 1R / 1.5R / 2R / 3R or the next S/R or supply/demand zone edge; optional time stop and trailing stop; one trade per rule at a time by default (`OnePerDirection` / `Unlimited` available). Fills are pessimistic: stop on touch, target only on a trade beyond it; a stop gap fills at the worse open, a target gap at the target; a candle touching both is settled with its 1m candles, and the stop is assumed first when one 1m candle touches both or no 1m data exist; limit orders fill only on a trade-through, at the limit, and a target touch in the fill minute does not count. Costs: taker fee on every fill, half the spread plus fixed and ATR slippage on every market fill, historical funding (section 4 and `notes/data-sources.md`), with 1x/2x stress multipliers. Sizing: fixed fractional risk (default 1 %, leverage cap 10x); results in R and in % of account. Filters (HTF 1h/4h EMA stack and structure, healthy pullback, ADX regime, volatility percentile, UTC session/hour) exist and are tested; **none was chosen or tuned**. Metrics: count, win rate, average win/loss in R, expectancy (net and gross), profit factor, max drawdown (R and %), longest losing streak, exposure, time in trade, a circular block-bootstrap 95 % CI for expectancy, breakdowns by ADX regime (with/against/range), UTC entry hour and month; trades CSV + summary JSON with an inputs hash and a results hash. **Lookahead guard:** every run rebuilds the market (features, levels, events) on truncated data at seeded cuts plus the last candle and refuses the run if anything known at a candle changes (a cheating "next close" source is refused). **All 5 self-checks pass** (section 4 has the numbers), plus the `known_at` entry test and the filter-timing test. 90 tests pass (`cargo test --workspace -j 2`); fmt and clippy (`-D warnings`) are clean. **Sealed holdout:** `candlescope backtest` stops before the last 183 days (from 2026-05-27 00:00 UTC) unless `--open-holdout`; Phase 4 decides the final boundary before looking at any result. **No tactic outcome has been looked at:** on real data only the random-entry baseline (a control) was run with printed results; the benchmark ran all detectors x 7 rule templates but prints and writes no outcome numbers. Benchmark: a full run (2 years of 1m data, all 47 directional detectors x 7 templates x 2 cost levels = 658 rule runs, 657,230 trades) takes **5.2-5.5 s** (release build, one thread). Committed locally as "Phase 3: backtest engine".
+
 **Stage:** Phase 2 (pattern engine, tier 1) finished. New code in `crates/cs-patterns`: 12 streaming detector groups emitting **52 detector names** (17 structural + all 35 candlestick patterns from `technical_analysis_patterns.txt`) plus per-candle context features. New command `candlescope detect --symbol BTCUSDT --tf 15m [--market um|spot]` writes `data/events/<market>/<SYM>/<tf>/events.csv` (134,041 events on BTCUSDT USDS-M 15m), `features.csv` (72,480 rows) and `gallery.json`, prints counts per detector with ZERO / RARE / ABSURD flags, measures throughput and re-checks prefix invariance on the real data; the report is `reports/detect-BTCUSDT-15m.md`. `python scripts/gallery.py <gallery.json> reports/detector-gallery` draws 10 random events per detector as SVG sheets (52 sheets + `index.html`, standard-library Python only). **Prefix invariance passes for every detector group and for the context features** (synthetic regime-switching data, 4 seeds, plus the real BTC 15m store; a deliberately cheating detector is caught, so the test has teeth). 140 hand-built candlestick fixtures pass (35 patterns x 2 positive + 2 negative). 61 tests in the workspace pass (`cargo test --workspace -j 2`); `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` are clean. Throughput of the full set + context: ~310-350k candles/s (release build, this laptop). Flags on BTC 15m: rising three methods (4 events), three black crows (13) and falling three methods (1) are RARE; nothing is ZERO or ABSURD. ETHUSDT and the 5m/1h time frames were also run (section 4): no ABSURD counts anywhere; only rare 3- and 5-bar candlestick patterns are ZERO on 1h. **No outcome or P&L of any detector has been looked at yet** (that is Phase 3). Nothing committed.
+
+**Phase 2 state (unchanged):** the next two paragraphs.
 
 **Phase 2 follow-up (same day):** (1) **Higher-time-frame trend state** (`crates/cs-patterns/src/htf.rs`): for a 5m/15m series, 1h and 4h EMA 20/50/200 stack and slopes plus the HTF swing-structure trend, built only from *completed* HTF candles (strict: every base candle of the bucket present; completed at the close of the base candle that ends the bucket, `known_at` = that candle's open time). It is a context feature (`Features::htf`, 16 new `h1_*` / `h4_*` columns in `features.csv`) and a 13th detector group `htf_trend` (4,389 state-change events on BTC 15m). (2) **Healthy-pullback flag** on `pullback` events (`tags` bit 16 = `pullback::HEALTHY`; impulse anchors in `ax/ay`, `bx/by`): smaller and slower than the preceding impulse, and no close beyond the last swing; 687 of 2,639 long and 662 of 2,553 short pullbacks on BTC 15m are healthy. Prefix invariance passes for both (the `htf_trend` and `pullback` groups, and the context features). Separate reference tests: the streaming HTF state equals a batch aggregation at every base candle (15m and 5m bases, data with missing candles), and the healthy flag equals a brute-force recomputation on 6,675 pullback events. 66 tests pass (`cargo test --workspace -j 2`); fmt and clippy clean. The detector gallery was **not** regenerated (no images were requested this time), so it still lacks `htf_trend` and the pullback anchors; run `python scripts/gallery.py data/events/um/BTCUSDT/15m/gallery.json reports/detector-gallery` to refresh it. All six `detect` runs (BTCUSDT, ETHUSDT x 5m/15m/1h) were re-run with the new features (prefix checks PASS); healthy share of pullbacks is 22-31 % in every run.
 
@@ -38,6 +42,11 @@ ecorder-bin`, so keep the release build working.
 **Notes written in Phase 0** (`notes/`): `knowledge.md` (testable definitions, OBJECTIVE/SEMI/SUBJECTIVE), `sources.md`, `data-sources.md` (live probes from India), `video-notes.md` (frames, OCR, transcript).
 
 **Decisions made so far**
+- **Phase 3 trade model:** a signal is decided at the close of its `known_idx` candle; the earliest fill is the next candle's open (the engine returns a lookahead error if an entry candle opens before that, and skips the signal across a data gap). Stops and targets come from raw prices only, so costs never change which trades happen (this makes cost monotonicity exact). R = |entry - initial stop| before costs, so a stopped trade loses slightly more than 1 R. Every fill pays the taker fee; target exits are treated as take-profit-market orders (spread + slippage). Trades still open at the end of the data close at the last close (flagged `END_OF_DATA`). Funding is charged for entry < funding time <= exit and is not scaled by the stress multiplier.
+- **Phase 3 lookahead guard = prefix audit in the engine** (`market::audit_prefix`): the signal source, the context features and the level tracker are re-run on truncated data and must match. It samples cuts, so it catches systematic lookahead (the canary at any cut), not necessarily a source that cheats only at a few candles.
+- **Sealed holdout default:** the last 183 days of the setup candles (now from 2026-05-27 00:00 UTC); the backtest command does not even load them unless `--open-holdout`. `--bench` includes them for timing only and prints no outcomes.
+- **Bootstrap:** circular block bootstrap of net R in exit order, block length ceil(n^(1/3)), 2000 resamples, seeded (in `cs-stats`).
+- **Cost defaults** (section 4 / `notes/data-sources.md`): taker 5 bps, spread 1 bp (0.5 per fill), slippage 1 bp + 0.02 ATR per market fill, historical funding; spot 10 bps fee, no funding.
 - **Phase 2 event contract:** every event has `formed_idx/formed_at` (bar where the pattern completes) and `known_idx/known_at` (first bar whose close reveals it, always the bar being processed; usable from the next open). Detectors are `Detector::update(i, candle, &mut Vec<Event>)` state machines with fixed-size rings and capacity-bounded lists allocated at construction; no end-of-data flush. `Event` lives in `cs-core` (`event.rs`) so the backtester can use it. Each detector owns its building blocks (ATR, swings, zones), so groups are independent and individually testable; the cost is some duplicated work (fine at ~330k candles/s).
 - **Phase 2 definitions:** every detector has a `*Params` struct with documented defaults and sensible ranges in its doc comments; the choices that pin down or deviate from `knowledge.md` are listed in its new section "Phase 2 implementation choices". They were fixed from definitions and event counts only, never from outcomes.
 - **HTF registry:** `registry()` entries now take the series' candle length (`make(base_ms)`) and `default_set(base_ms)` / `ContextParams::for_base(base_ms)` build for it; `detect` passes the `--tf` length. An HTF that is not a larger multiple of the base (e.g. 1h on a 1h series) stays inactive (empty columns, no events).
@@ -61,7 +70,7 @@ ecorder-bin`, so keep the release build working.
 
 ## 2. Goal
 
-(Unchanged in Phase 2 and its follow-up. Phase 2 produces candidate events only; none is a signal until Phase 3/4 measure it after costs.)
+(Unchanged in Phases 2 and 3. Phase 2 produces candidate events only; Phase 3 built the measuring tool; none is a signal until Phase 4 measures it after costs, out of sample.)
 
 Build a local program that:
 1. Downloads and checks about two years of candle data (and funding, open interest and liquidations where available).
@@ -121,17 +130,34 @@ imp/
       tests/candles.rs          140 hand-built candlestick fixtures
       tests/htf.rs              HTF state vs batch reference (gaps, 15m/5m), healthy flag vs brute force
       tests/scenarios.rs        hand-built sweep / breakout / retest / fakeout / demand / fib / trendline cases
-    cs-backtest/                event-driven simulator, costs, metrics
+    cs-backtest/                event-driven simulator, costs, metrics (Phase 3):
+      src/lib.rs                Error (Lookahead / Input), backtest() = simulate + summarize + hashes
+      src/market.rs             SignalSource trait (DetectorSource, RandomSource, FixedSource), Market::prepare
+                                (candles + context features + S/R levels + events), audit_prefix (lookahead guard)
+      src/rule.rs               TradeRule: Select, Entry (NextOpen / Limit), StopRule, Target, Trail, Overlap, Filter
+      src/sim.rs                simulate(): entries, pessimistic fills, 1m drill-down, trailing/time stops,
+                                funding, sizing and equity; Trade, Skips, FillStats
+      src/cost.rs               CostModel (BINANCE_UM / BINANCE_SPOT / ZERO), Fill, Funding
+      src/metrics.rs            Summary, breakdowns, block-bootstrap CI, sanity flags (SUSPECT_LOOKAHEAD ...)
+      src/output.rs             trades CSV, summary JSON, market/data fingerprints, inputs and results hashes
+      src/testkit.rs            synthetic 1m random walks (martingale) and regime walks, strict aggregation, funding rows
+      tests/selfcheck.rs        the 5 self-checks + known_at entry tests + filter-timing test
+      tests/fills.rs            1m ambiguity, gaps, limit fills, trailing, time stop, funding window, overlap,
+                                leverage cap, cost identity
+      tests/common/mod.rs       hand-built candle and 1m helpers
     cs-stats/                   walk-forward, multiple-testing control, bootstrap, probability model
+      src/bootstrap.rs          circular block bootstrap CI of a mean (Phase 3); src/lib.rs SplitMix64
     cs-live/                    websocket ingest, incremental engine, signal logger
     cs-ui/                      always-on-top overlay
     cs-vision/                  screen capture and OCR of symbol and time frame (local only)
-    cs-cli/                     binary "candlescope": fetch, validate, resample, record, record-status, record-stop (Phase 1)
+    cs-cli/                     binary "candlescope": fetch, validate, resample, record, record-status, record-stop (Phase 1),
+                                detect (Phase 2), backtest (Phase 3, src/backtest.rs: holdout sealing, rule templates, --bench)
   scripts/
     start-recorder.ps1          start the recorder hidden (copies the exe to data/recorder-bin first)
     stop-recorder.ps1           clean stop (writes data/live/STOP, waits, then kills if needed)
     install-recorder-autostart.ps1   scheduled task at sign-in (installed 2026-11-27)
     gallery.py                  detector gallery: gallery.json -> SVG sheets + index.html (stdlib only)
+    spread-stats.py             spread and book-walk cost stats from the live recorder (stdlib only, Phase 3)
   data/                         git-ignored
     raw/binance-vision/...      verified archive zips + .CHECKSUM files, same paths as on data.binance.vision
     store/klines/<spot|um>/<SYM>/1m/<YYYY-MM | YYYY-MM-DD>.csc   1m candles, one file per archive file
@@ -143,6 +169,7 @@ imp/
     recorder-bin/               copy of the recorder exe that is running
     logs/                       fetch logs
     events/<market>/<SYM>/<tf>/ events.csv, features.csv, gallery.json (Phase 2 `detect`)
+    backtest/<market>/<SYM>/<tf>/ runs.csv + <rule>-x<mult>/trades.csv, summary.json (Phase 3 `backtest`)
     probe/, video/              Phase 0
   reports/
     data-quality.md             `candlescope validate` output (Phase 1)
@@ -150,11 +177,13 @@ imp/
     detect-<SYM>-<tf>.md        `candlescope detect` counts per detector/kind, flags, throughput (Phase 2;
                                 BTCUSDT and ETHUSDT x 5m, 15m, 1h; gallery images only for BTC 15m)
     detector-gallery/           <detector>.svg x 52 + index.html (git-ignored artefacts)
+    backtest-baseline-BTCUSDT-15m.md   random-entry baseline on real data (control), in-sample only (Phase 3)
+    backtest-bench-BTCUSDT-15m.md      timing of a full run; no outcome numbers (Phase 3)
   crates/cs-data/src/           bybit, clean (R1-R5), fetch, http (polite client), parse, record, resample, store (CSC1), validate, vision, zipread
   crates/cs-data/tests/         golden.rs + fixtures/ (hand-built 90-minute archive with a header, a duplicate, a swap, a gap, a zero-volume candle, a 2% wick and a microsecond row; golden-pipeline.txt)
 ```
 
-Workspace lints: `unsafe_code = forbid`, clippy `all` + `pedantic` as warnings, `float_cmp` and `dbg_macro` denied, `unwrap`/`expect` warned. Dev profile compiles dependencies at opt-level 2 for faster backtests. Internal crates are not wired to each other yet (cargo warns about unused dependencies); add `cs-core = { path = ... }` entries when code uses them.
+Workspace lints: `unsafe_code = forbid`, clippy `all` + `pedantic` as warnings, `float_cmp` and `dbg_macro` denied, `unwrap`/`expect` warned. Dev profile compiles dependencies at opt-level 2 for faster backtests. Internal crates are wired as used: cs-patterns -> cs-core; cs-backtest -> cs-core, cs-patterns, cs-stats (+ sha2 and serde_json, both already in the tree, so Phase 3 added no new third-party crate); cs-cli -> all of them.
 
 **Data flow**
 
@@ -191,8 +220,22 @@ screen --> cs-vision (symbol, time frame, price check, local only) --> picks the
 
 - **Phase 2 follow-up:** HTF state on BTC 15m: 1h state on 72,477 candles (EMA ready 98.9 %, bull stack 22.0 %, bear stack 21.9 %, structure up 29.8 % / down 28.7 %), 4h state on 72,465 (EMA ready 95.5 %, bull 20.0 %, bear 22.8 %, up 30.3 % / down 28.8 %); mean lag 1.50 / 7.50 base candles, which is exactly what completed-candle-only use implies (0-3 and 0-15 candles). Spot check: at 2024-11-11 09:30 the 1h state is from the 08:00 candle (known 08:45) and the 4h state from 04:00 (known 07:45). Pullback events are unchanged in number (5,192); the flag only adds information. Throughput of the full set + context ~310-320k candles/s (htf_trend alone 16M candles/s).
 
+- **Phase 3 self-checks (all pass; `cargo test -p cs-backtest --test selfcheck -- --nocapture` prints the numbers):**
+  1. *Hand-calculated scenario:* two trades on hand-built candles with ATR exactly 2.0 (fee 5 bps, spread 2 bps, slippage 1 bp + 0.1 ATR, funding 1 bp). Long: entry fill 100.22, target exit fill 103.7792, net **+1.7286002 R**; short: stopped at 106 (fill 106.2212), receives funding at 08:00 (-0.005225 R), net **-1.2682751 R**; account 10,000 -> 10,043.84 (+0.4384 %); every component, the equity path, expectancy 0.23016255 R, PF and drawdown match the hand values to 1e-9.
+  2. *Random-entry baseline* (1 year of a driftless 1m random walk, 15m candles, random direction, stop 1 ATR, target 1 R, Binance UM costs): 9,059 trades, gross **+0.0034 R (SE 0.0105)**, net **-0.4142 R**, mean cost 0.4176 R vs 0.4179 R predicted from the cost parameters alone; the 95 % CI [-0.4339, -0.3926] contains minus the costs. On **real data** (control, in-sample only): BTCUSDT 15m 12,325 trades, gross **-0.0036 R (SE 0.0090)**, mean cost 0.5513 R (fee 0.394, spread 0.039, slippage 0.118, funding 0.0001), net **-0.5548 R** (CI -0.5824 .. -0.5262); ETHUSDT 15m 12,078 trades, gross -0.0088 R (SE 0.0091), cost 0.3467 R, net -0.3555 R. Gross is zero within noise and net = minus costs, as it must be.
+  3. *Lookahead canary:* a source that decides at candle k from the close of k+1 is refused by the engine's prefix audit ("3404 events known before candle 3404 in the full run, 3403 when the data ends there"); forced through anyway it shows win rate 100 %, t-stat 102.9, PF inf at zero cost (t-stat 23.5 at 1x costs) and is flagged `SUSPECT_LOOKAHEAD`. The random source and the real detector set pass the same audit.
+  4. *Cost monotonicity:* 20 rules (5 detectors x 2R / next level / limit / trailing + time stop) x 6 cost levels (0, 0.5, 1, 1.5, 2, 4x): identical trade sets, every trade's net R non-increasing, expectancy non-increasing (e.g. fakeout-2r on synthetic data -0.054 / -0.185 / -0.315 / -0.445 / -0.576 / -1.097 R); raising fee, spread, fixed or ATR slippage alone lowers expectancy.
+  5. *Determinism:* the full pipeline (prepare, audit, 20 rules, metrics, bootstrap, CSV, JSON) twice gives identical hashes and text; another bootstrap seed changes the hash. The CLI repeats the same hashes run to run (baseline `d667...1c58`, bench `cf75...35e2`).
+  - *known_at entry:* 11,148 trades over 21 rules: none entered before the close of its `known_at` candle; next-open entries are exactly at that close and at candle k+1's open; a hand-built case where entering on the signal candle would win shows entry on k+1 (next open) / k+2 (limit) and a loss; an inconsistent `known_at` or `formed_idx > known_idx` is refused.
+  - *Filters:* 20 filter variants x 5,833 events x 4 cuts: identical decisions with the data truncated after the cut and with a completely different future appended; every filter passes some events and rejects others; HTF `known_at` <= the decision candle at every candle.
+- **Phase 3 fill tests (10, `tests/fills.rs`):** 1m resolution (target first / stop first / both in one minute -> stop / no 1m -> stop / mismatching 1m -> unused), gaps (stop at the worse open, target at the target), touch vs trade-through, limit fills (no fill on an exact touch, fill at the limit, target ignored in the fill minute, stop counted, expiry blocks overlap, marketable limit at the open), trailing stop effective from the next candle, time stop at the open, funding window (entry-exclusive, exit-inclusive, ms past the minute), overlap policies, leverage cap, and a cost identity on >1,000 detector trades (one half-spread, one slippage, one fee per fill).
+- **Real-data intrabar resolution:** on BTCUSDT 15m random trades, 189 exit candles touched both stop and target; 1m candles settled 187, only 2 needed the stop-first fallback (ETH: 140 / 6).
+- **Benchmark (release, one thread, BTCUSDT USDS-M 15m, all history):** load 15m 0.03 s, load 1,087,200 1m candles 0.69 s, funding 0.01 s, prepare (all detectors + context + levels) 0.24 s, lookahead audit 3 cuts 0.39 s, fingerprints 0.08 s, 658 rule runs (47 detectors x 7 templates x 2 cost levels, 657,230 trades, metrics + 2000-resample bootstrap each) 3.90 s; **total 5.24-5.46 s** (`reports/backtest-bench-BTCUSDT-15m.md`).
+- **Costs measured from the recorder** (`scripts/spread-stats.py`, ~6 h): BTCUSDT spread median 0.017 bps, ETHUSDT 0.059 bps, max 0.96 / 1.59 bps; a $10k market order fits in the top 20 levels 99.4 % / 99.9 % of the time.
+
 ## 5. What did not work, or was ruled out
 
+- **Phase 3:** (1) The first hand calculation in self-check 1 was wrong (1.7285002 R instead of 1.7286002 R); the test failed and re-adding by hand confirmed the engine. (2) The synthetic regime walk produces no `breakout` events (no tight range boxes), so the cost-monotonicity rule set uses `fakeout`; a zero-trade rule gives NaN expectancy. (3) A large `serde_json::json!` literal hit the macro recursion limit; the summary JSON is built key by key. (4) LNK1104 (locked test executable) happened once more; an immediate retry linked. (5) The taker fee (5 bps) is from the published Binance schedule as known in mid-2026 and was **not re-checked online** (network use is limited to market data). (6) Spread and depth were measured over one quiet ~6 h window only. (7) **Costs dominate short time frames:** random entries with 1-ATR stops on BTC 15m pay 0.55 R per trade (fee alone 0.39 R); any 15m tactic with stops near 1 ATR needs a gross edge above that.
 - **Phase 2 follow-up:** LNK1104 (locked test executable) also happened once with `-j 2`, right after the same test binary had been rebuilt; an immediate retry linked. The healthy-flag reference test first took 45 s (brute-force swings recomputed per event); swings are now computed once per data set (1.5 s).
 
 - **Phase 2, the first S/R zone version gave absurd counts:** zones overlapped and were sliced through repeatedly (one bar broke up to 25 zones; ~13 breaks per zone; role_reversal 12,071 and breakout 7,168 events). Fixed by merging overlapping zones, retiring a zone after more than 2 breaks, expiring on pivot touches only, requiring price to leave the zone (0.5 ATR) before a role-reversal retest, and emitting at most one breakout/fakeout candidate per bar and direction (outermost level). Now role_reversal 4,151, breakout 3,271, fakeout 3,948. These are still high-frequency events; they are candidates, and Phase 3 decides whether any of them is worth anything.
@@ -231,7 +274,8 @@ Each phase runs in its own Claude Code session (new session, same folder). See `
   - Follow-ups: keep the recorder running (sign-in task installed; keep the lid open / laptop awake); after ~1 week check `record-status` (liq_bybit lines, reconnect counts, agg-trade gaps); fetch `--book-depth` if Phase 2/3 wants depth filters; re-run `candlescope fetch` + `validate` before Phase 4 to extend the history (only new days download).
 - [x] **Phase 2** Pattern engine, tier 1 detectors: market structure (swings, HH/HL/LH/LL, BOS, CHoCH), S/R zones + role reversal, supply/demand (fresh/tested), EMA 20/50/200 state + slope, trendlines, pullback to value + trigger, Fibonacci retracement/extension, breakout + retest, fakeout, liquidity sweeps (equal H/L, prev day/week H/L), all 35 candlestick patterns, context features; `detect` command; gallery.
   - Follow-ups: **the user should look through `reports/detector-gallery/index.html`** and say which detectors look wrong (orange dashed line = formed, blue line = known). Not yet coded from the knowledge.md tier-1 list: A2 1-2-3 reversal, A10/A11 spring/upthrust as their own detectors (range-edge pools for the sweep), using the higher-time-frame trend as a T6 pullback condition (the healthy-pullback flag and the HTF trend state themselves were added in the follow-up). `detect` has been run on BTCUSDT and ETHUSDT x 5m/15m/1h (reports in `reports/detect-*.md`). Phase 3 must fill at the next open after `known_at` + one candle, and count every parameter variant tried.
-- [ ] **Phase 3** Backtest engine with costs
+- [x] **Phase 3** Backtest engine with costs: `cs-backtest` (trade model, pessimistic fills with 1m resolution, costs with 1x/2x stress, sizing, filters, metrics, block-bootstrap CI, breakdowns, trades CSV + summary JSON + hashes), prefix-audit lookahead guard, all 5 self-checks + known_at + filter tests, `candlescope backtest` with a sealed holdout and `--bench`.
+  - Follow-ups for Phase 4: (1) **decide the holdout boundary before looking at any result** (default sealed from 2026-05-27; do not move it earlier into inspected data) and open it once; (2) count every rule x detector x filter x cost variant toward the multiple-testing budget: `candlescope backtest --rules all` runs 7 fixed templates per detector (47 directional detectors on BTC 15m = 329 rules); the Phase 3 bench ran them for timing only and nothing was inspected; (3) expect costs to kill most 15m rules (0.55 R per trade at 1-ATR stops); test 1h and wider stops too; (4) verify the 5 bps taker fee on Binance's fee page and re-run `scripts/spread-stats.py` after a few weeks of recording; (5) walk-forward and multiple-testing control in `cs-stats`; (6) the detector gallery still lacks `htf_trend` (regenerate if images are wanted).
 - [ ] **Phase 4** Research, validation and the GATE report
 - [ ] **GATE** Do any setups survive? If not, stop or change the hypotheses.
 - [ ] **Phase 4b (optional)** Tier 2 and tier 3 patterns, then re-run the research
@@ -241,6 +285,7 @@ Each phase runs in its own Claude Code session (new session, same folder). See `
 - [ ] **Phase 8** Forward paper test and final report; optional stocks extension (NVDA: Alpaca free primary, Polygon/Massive free fallback; needs the user's free keys)
 
 **Open questions for the user**
+- Account size, risk per trade and fee tier: Phase 3 defaults to a 10,000 account, 1 % risk, a 10x leverage cap (`--equity`, `--risk`, `--max-leverage`) and VIP 0 taker fees without the BNB discount (5 bps on USDS-M). Are these right for you?
 - Which time frames matter most (suggested start: 5m, 15m, 1h)? The videos show 15m BTC and 5m XAUUSD/NVDA.
 - Account size and risk per trade, for position-size output (the tool will ask, and default to 1%).
 - Spot or perpetual-futures prices as the reference for BTC/ETH signals? (Perps carry funding and liquidations; the videos use TradingView's BTCUSD index and Binance BTCUSDT.)

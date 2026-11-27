@@ -108,3 +108,26 @@ data has no liquidation or funding analogues, so only the price-based tactics ca
 - **Local clock vs exchange:** in the recorder test the laptop clock was about 1 s behind Binance event
   times (`E`). Use exchange timestamps (`E`, `T`, `k.t`) for analysis; the recorder's own `t` is the
   local receive time and is used only to name files.
+
+## Costs used by the backtester (Phase 3, 2026-11-27)
+
+`notes/data-sources.md` had no cost numbers before Phase 3, so they were set here. Defaults live in
+`crates/cs-backtest/src/cost.rs` (`CostModel::BINANCE_UM`, `CostModel::BINANCE_SPOT`); every run
+also runs at 2x (stress multiplier on fee, spread and slippage).
+
+| Item | Default (USDS-M perps) | Source / reasoning |
+|---|---|---|
+| Taker fee per fill | **5.0 bps** (0.05 %) | Binance USDS-M futures fee schedule, Regular user / VIP 0 taker, no BNB discount (maker 0.02 %). Taken from the published schedule as known in mid-2026, **not re-checked online in Phase 3** (CLAUDE.md limits network use to market data); verify on binance.com's fee page. Spot: 10 bps (VIP 0 taker). Charged on **every** fill, also limit fills that would pay the maker fee (pessimistic). |
+| Quoted spread | **1.0 bps** full, i.e. 0.5 bps per market fill | Measured from the live recorder with `python scripts/spread-stats.py data/live` over ~5.9 h (12,517 top-of-book samples per symbol, 2026-11-26 22:14 to 2026-11-27 04:11 UTC): BTCUSDT median 0.0165 bps, p99 0.0166, max 0.96 bps; ETHUSDT median 0.0589, p99 0.0594, max 1.59 bps (one tick most of the time). The default is ~60x the BTC median and roughly the observed maximum, to cover wider spreads in fast markets, where stops fire. |
+| Fixed slippage per market fill | **1.0 bps** | Book walk on 1,267 depth20 snapshots per symbol (same window): a $10k order fits in the visible 20 levels 99.4 % (BTC) / 99.9 % (ETH) of the time with extra cost beyond the half-spread of median 0, p99 0.10 / 0.22 bps; $50k fits 91.5 % / 95.2 % of the time (p99 0.15 / 0.40 bps); $250k usually does not fit in 20 levels (76.6 % / 74.4 % beyond them). So 1 bp is generous for a $10k account at up to 10x leverage; it is not measured for larger sizes. |
+| Volatility slippage per market fill | **0.02 x ATR(14)** of the setup time frame at the last closed candle | Assumption, not measured: covers the delay between a candle close and a human acting on an advisory signal, and stop slippage in fast moves. On BTC 15m (ATR ~0.25 % of price) this is ~0.5 bps per fill. |
+| Funding | historical rates from the store, longs pay positive rates | Charged when a position is open at a funding time: entry < time <= exit (times floored to the minute), price = open of the 1m candle at that time. Not scaled by the stress multiplier (it is a cash flow and can be a credit). |
+
+Round trip at 1x on BTC 15m with a 1-ATR stop: about 2 x (5 + 0.5 + 1) bps + 2 x 0.02 ATR,
+which the random-entry baseline measured as **0.55 R per trade** (fee alone 0.39 R). Costs in R
+fall with wider stops and higher time frames; tactics with stops near 1 ATR on 15m need a gross
+edge above ~0.55 R just to break even.
+
+Measurement caveats: one recording window of ~6 h on a quiet night; spreads and depth will be
+wider around news and liquidation cascades. Re-run `scripts/spread-stats.py` after a few weeks of
+recording and update the table.
